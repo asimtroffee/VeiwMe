@@ -55,6 +55,70 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
     );
   }, [allAttendees, searchQuery]);
 
+  const exportCSV = () => {
+    if (viewTab === 'bookings') {
+      const listToExport = filteredCandidates;
+      if (listToExport.length === 0) {
+        onShowToast('No bookings available to export.', 'error');
+        return;
+      }
+      const headers = ['Session Title', 'Session Date', 'Time Slot', 'Candidate Name', 'Category', 'Email', 'Phone', 'Contact Info', 'Booked At'];
+      const rows = listToExport.map((c) => [
+        `"${(c.sessionTitle || '').replace(/"/g, '""')}"`,
+        `"${c.sessionDate || ''}"`,
+        `"${c.slotTimeLabel || ''}"`,
+        `"${(c.candidateName || '').replace(/"/g, '""')}"`,
+        `"${c.candidateCategory || 'A'}"`,
+        `"${(c.candidateEmail || '').replace(/"/g, '""')}"`,
+        `"${(c.candidatePhone || '').replace(/"/g, '""')}"`,
+        `"${(c.candidateContact || '').replace(/"/g, '""')}"`,
+        `"${c.bookedAt ? new Date(c.bookedAt).toLocaleString() : ''}"`
+      ]);
+
+      const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement('a');
+      link.setAttribute('href', encodedUri);
+      link.setAttribute('download', `all_candidate_bookings_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      onShowToast(`Exported ${listToExport.length} candidate booking(s) to CSV!`);
+    } else {
+      const listToExport = filteredAttendees;
+      if (listToExport.length === 0) {
+        onShowToast('No attendees available to export.', 'error');
+        return;
+      }
+      const headers = ['Session Title', 'Session Date', 'Candidate Name', 'Category', 'Email', 'Phone', 'Contact Info', 'Status', 'Booked Slot', 'First Checked In', 'Last Seen', 'Device', 'Client Timezone'];
+      const rows = listToExport.map((att) => [
+        `"${(att.sessionTitle || '').replace(/"/g, '""')}"`,
+        `"${att.sessionDate || ''}"`,
+        `"${(att.name || '').replace(/"/g, '""')}"`,
+        `"${att.category || 'A'}"`,
+        `"${(att.email || '').replace(/"/g, '""')}"`,
+        `"${(att.phone || '').replace(/"/g, '""')}"`,
+        `"${(att.contact || '').replace(/"/g, '""')}"`,
+        `"${att.isBooked ? 'Booked' : 'Checked In'}"`,
+        `"${att.bookedSlot ? att.bookedSlot.timeLabel : (att.bookedSlotId ? 'Booked' : 'None')}"`,
+        `"${att.firstCheckedInAt ? new Date(att.firstCheckedInAt).toLocaleString() : ''}"`,
+        `"${att.lastSeenAt ? new Date(att.lastSeenAt).toLocaleString() : ''}"`,
+        `"${att.device || 'Desktop'}"`,
+        `"${att.clientTimezone || 'UTC'}"`
+      ]);
+
+      const csvContent = 'data:text/csv;charset=utf-8,\uFEFF' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement('a');
+      link.setAttribute('href', encodedUri);
+      link.setAttribute('download', `all_checked_in_attendees_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      onShowToast(`Exported ${listToExport.length} attendee record(s) to CSV!`);
+    }
+  };
+
   return (
     <div>
       {/* Header & Search */}
@@ -77,28 +141,35 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
           </p>
         </div>
 
-        <div style={{ position: 'relative', width: '280px' }}>
-          <span
-            className="material-symbols-outlined"
-            style={{
-              position: 'absolute',
-              left: '12px',
-              top: '50%',
-              transform: 'translateY(-50%)',
-              color: 'var(--color-secondary)',
-              fontSize: '20px'
-            }}
-          >
-            search
-          </span>
-          <input
-            type="text"
-            className="input-field"
-            placeholder="Search candidate or session..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ paddingLeft: '40px' }}
-          />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative', width: '280px' }}>
+            <span
+              className="material-symbols-outlined"
+              style={{
+                position: 'absolute',
+                left: '12px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                color: 'var(--color-secondary)',
+                fontSize: '20px'
+              }}
+            >
+              search
+            </span>
+            <input
+              type="text"
+              className="input-field"
+              placeholder="Search candidate or session..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{ paddingLeft: '40px' }}
+            />
+          </div>
+
+          <button className="btn btn-secondary" onClick={exportCSV}>
+            <span className="material-symbols-outlined">download</span>
+            <span>Export CSV</span>
+          </button>
         </div>
       </div>
 
@@ -165,11 +236,16 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
                     {c.candidateName.charAt(0).toUpperCase()}
                   </div>
                   <div>
-                    <div style={{ fontWeight: '700', fontSize: '16px', color: 'var(--color-primary)' }}>
-                      {c.candidateName}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontWeight: '700', fontSize: '16px', color: 'var(--color-primary)' }}>
+                        {c.candidateName}
+                      </span>
+                      <span className="chip chip-accent" style={{ fontSize: '11px', padding: '1px 6px' }}>
+                        Category {c.candidateCategory || 'A'}
+                      </span>
                     </div>
                     <div style={{ fontSize: '13px', color: 'var(--color-secondary)' }}>
-                      {c.candidateContact}
+                      {c.candidateEmail ? `${c.candidateEmail} ${c.candidatePhone ? `• ${c.candidatePhone}` : ''}` : c.candidateContact}
                     </div>
                   </div>
                 </div>
@@ -242,11 +318,16 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
                     {att.name.charAt(0).toUpperCase()}
                   </div>
                   <div>
-                    <div style={{ fontWeight: '700', fontSize: '16px', color: 'var(--color-primary)' }}>
-                      {att.name}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontWeight: '700', fontSize: '16px', color: 'var(--color-primary)' }}>
+                        {att.name}
+                      </span>
+                      <span className="chip chip-accent" style={{ fontSize: '11px', padding: '1px 6px' }}>
+                        Category {att.category || 'A'}
+                      </span>
                     </div>
                     <div style={{ fontSize: '13px', color: 'var(--color-secondary)' }}>
-                      {att.contact}
+                      {att.email ? `${att.email} ${att.phone ? `• ${att.phone}` : ''}` : att.contact}
                     </div>
                     <div style={{ fontSize: '11px', color: 'var(--color-on-surface-variant)', marginTop: '2px' }}>
                       First checked in: {new Date(att.firstCheckedInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}

@@ -15,6 +15,7 @@ import {
 const SESSIONS_KEY = 'viewme_sessions_v2';
 const BOOKINGS_KEY = 'viewme_bookings_v2';
 const ATTENDEES_KEY = 'viewme_attendees_v2';
+const BLOCKED_SLOTS_KEY = 'viewme_blocked_slots_v2';
 const EVENTS_KEY = 'viewme_activity_events_v2';
 const ADMIN_AUTH_KEY = 'viewme_admin_auth_v2';
 const ADMIN_LOCKOUT_KEY = 'viewme_admin_lockout_v2';
@@ -125,6 +126,9 @@ function getInitialBookings() {
   return {
     'mkt-round2_slot_540_555': {
       candidateName: 'Alex Rivera',
+      candidateCategory: 'A',
+      candidateEmail: 'alex.rivera@example.com',
+      candidatePhone: '+1 555-019-2834',
       candidateContact: 'alex.rivera@example.com',
       bookedAt: new Date(Date.now() - 3600000).toISOString()
     }
@@ -137,7 +141,11 @@ function getInitialAttendees() {
       id: 'mkt-round2_alex.rivera@example.com',
       sessionId: 'mkt-round2',
       name: 'Alex Rivera',
+      category: 'A',
+      email: 'alex.rivera@example.com',
+      phone: '+1 555-019-2834',
       contact: 'alex.rivera@example.com',
+      editCount: 0,
       device: 'Desktop',
       firstCheckedInAt: new Date(Date.now() - 3700000).toISOString(),
       lastSeenAt: new Date(Date.now() - 3600000).toISOString(),
@@ -209,6 +217,16 @@ function getRawBookings() {
 
 function saveRawBookings(bookings) {
   localStorage.setItem(BOOKINGS_KEY, JSON.stringify(bookings));
+}
+
+function getRawBlockedSlots() {
+  const data = localStorage.getItem(BLOCKED_SLOTS_KEY);
+  if (!data) return {};
+  try { return JSON.parse(data); } catch { return {}; }
+}
+
+function saveRawBlockedSlots(blockedSlots) {
+  localStorage.setItem(BLOCKED_SLOTS_KEY, JSON.stringify(blockedSlots));
 }
 
 function getRawAttendees() {
@@ -364,16 +382,20 @@ export function logoutAdmin() {
 export function getAllSessions() {
   const sessions = getRawSessions();
   const bookings = getRawBookings();
+  const blockedSlots = getRawBlockedSlots();
 
   return sessions.map((session) => {
     const duration = Number(session.slotDuration) || 15;
     const slots = generateTimeSlots(session.startTime, session.endTime, duration);
     let bookedCount = 0;
+    let blockedCount = 0;
 
     slots.forEach((slot) => {
       const key = `${session.id}_${slot.id}`;
       if (bookings[key]) {
         bookedCount++;
+      } else if (blockedSlots[key]) {
+        blockedCount++;
       }
     });
 
@@ -382,6 +404,8 @@ export function getAllSessions() {
       slotDuration: duration,
       totalSlots: slots.length,
       bookedCount: bookedCount,
+      blockedCount: blockedCount,
+      availableCount: Math.max(0, slots.length - bookedCount - blockedCount),
       percentBooked: slots.length > 0 ? Math.round((bookedCount / slots.length) * 100) : 0
     };
   });
@@ -394,23 +418,39 @@ export function getSessionDetails(sessionId) {
 
   const duration = Number(session.slotDuration) || 15;
   const bookings = getRawBookings();
+  const blockedSlots = getRawBlockedSlots();
   const slots = generateTimeSlots(session.startTime, session.endTime, duration);
 
   let bookedCount = 0;
+  let blockedCount = 0;
   const enrichedSlots = slots.map((slot) => {
     const key = `${session.id}_${slot.id}`;
     const booking = bookings[key];
+    const isBlocked = Boolean(blockedSlots[key]);
+
     if (booking) {
       bookedCount++;
       return {
         ...slot,
         isBooked: true,
+        isBlocked: false,
         booking: booking
+      };
+    }
+    if (isBlocked) {
+      blockedCount++;
+      return {
+        ...slot,
+        isBooked: false,
+        isBlocked: true,
+        booking: null,
+        blockedInfo: blockedSlots[key]
       };
     }
     return {
       ...slot,
       isBooked: false,
+      isBlocked: false,
       booking: null
     };
   });
@@ -421,8 +461,63 @@ export function getSessionDetails(sessionId) {
     slots: enrichedSlots,
     totalSlots: slots.length,
     bookedCount: bookedCount,
+    blockedCount: blockedCount,
+    availableCount: Math.max(0, slots.length - bookedCount - blockedCount),
     percentBooked: slots.length > 0 ? Math.round((bookedCount / slots.length) * 100) : 0
   };
+}
+
+export function toggleSlotBlocked(sessionId, slotId, reason = 'Unavailable') {
+  const blockedSlots = getRawBlockedSlots();
+  const sessions = getRawSessions();
+  const session = sessions.find((s) => s.id === sessionId);
+  const key = `${sessionId}_${slotId}`;
+
+  const isCurrentlyBlocked = Boolean(blockedSlots[key]);
+  if (isCurrentlyBlocked) {
+    delete blockedSlots[key];
+    saveRawBlockedSlots(blockedSlots);
+
+    if (isFirebaseConfigured() && db) {
+      deleteDoc(doc(db, 'blocked_slots', key)).catch(() => {});
+    }
+
+    logActivityEvent({
+      type: 'SLOT_UNBLOCKED',
+      sessionId,
+      sessionTitle: session?.title || 'Session',
+      actor: 'Admin',
+      details: `Restored slot ${slotId} to open/available`
+    });
+
+    broadcast('SLOT_BLOCKED_TOGGLED', { sessionId, slotId, isBlocked: false });
+    return { success: true, isBlocked: false };
+  } else {
+    const blockRecord = {
+      sessionId,
+      slotId,
+      blockedAt: new Date().toISOString(),
+      reason: reason || 'Unavailable'
+    };
+
+    blockedSlots[key] = blockRecord;
+    saveRawBlockedSlots(blockedSlots);
+
+    if (isFirebaseConfigured() && db) {
+      setDoc(doc(db, 'blocked_slots', key), blockRecord).catch(() => {});
+    }
+
+    logActivityEvent({
+      type: 'SLOT_BLOCKED',
+      sessionId,
+      sessionTitle: session?.title || 'Session',
+      actor: 'Admin',
+      details: `Marked slot ${slotId} unavailable`
+    });
+
+    broadcast('SLOT_BLOCKED_TOGGLED', { sessionId, slotId, isBlocked: true });
+    return { success: true, isBlocked: true };
+  }
 }
 
 export function createNewSession({ title, date, startTime, endTime, slotDuration = 15, timezone = 'EST', description = '' }) {
@@ -479,6 +574,16 @@ export function deleteSession(sessionId) {
   });
   saveRawBookings(updatedBookings);
 
+  // Clean up blocked slots
+  const blockedSlots = getRawBlockedSlots();
+  const updatedBlockedSlots = {};
+  Object.keys(blockedSlots).forEach((key) => {
+    if (!key.startsWith(`${sessionId}_`)) {
+      updatedBlockedSlots[key] = blockedSlots[key];
+    }
+  });
+  saveRawBlockedSlots(updatedBlockedSlots);
+
   // Firestore sync
   if (isFirebaseConfigured() && db) {
     deleteDoc(doc(db, 'sessions', sessionId)).catch((err) => {
@@ -502,11 +607,12 @@ export function deleteSession(sessionId) {
 // Attendee Check-In Recording
 // -------------------------------------------------------------
 
-export function recordSessionAttendee(sessionId, { name, contact }) {
+export function recordSessionAttendee(sessionId, { name, category = 'A', email = '', phone = '', contact = '' }) {
   const attendees = getRawAttendees();
   const sessions = getRawSessions();
   const session = sessions.find((s) => s.id === sessionId);
-  const normalizedContact = contact.trim().toLowerCase();
+  const derivedContact = contact || (email && phone ? `${email} • ${phone}` : email || phone || '');
+  const normalizedContact = (email || derivedContact || name).trim().toLowerCase();
   const key = `${sessionId}_${normalizedContact}`;
   const now = new Date().toISOString();
   const clientMeta = getClientMetadata();
@@ -516,7 +622,11 @@ export function recordSessionAttendee(sessionId, { name, contact }) {
     id: key,
     sessionId,
     name: name.trim(),
-    contact: contact.trim(),
+    category: category || 'A',
+    email: email.trim(),
+    phone: phone.trim(),
+    contact: derivedContact.trim(),
+    editCount: existing?.editCount !== undefined ? existing.editCount : 0,
     device: clientMeta.device,
     clientTimezone: clientMeta.timezone,
     firstCheckedInAt: existing ? existing.firstCheckedInAt : now,
@@ -528,7 +638,14 @@ export function recordSessionAttendee(sessionId, { name, contact }) {
   attendees[key] = attendeeRecord;
   saveRawAttendees(attendees);
 
-  saveParticipantProfile(sessionId, { name: attendeeRecord.name, contact: attendeeRecord.contact });
+  saveParticipantProfile(sessionId, {
+    name: attendeeRecord.name,
+    category: attendeeRecord.category,
+    email: attendeeRecord.email,
+    phone: attendeeRecord.phone,
+    contact: attendeeRecord.contact,
+    editCount: attendeeRecord.editCount
+  });
 
   // Firestore sync
   if (isFirebaseConfigured() && db) {
@@ -542,7 +659,7 @@ export function recordSessionAttendee(sessionId, { name, contact }) {
     sessionId: sessionId,
     sessionTitle: session?.title || 'Interview Session',
     actor: attendeeRecord.name,
-    details: `Checked in (${attendeeRecord.contact}) on ${attendeeRecord.device}`
+    details: `Checked in Category ${attendeeRecord.category} (${attendeeRecord.email || attendeeRecord.contact}) on ${attendeeRecord.device}`
   });
 
   broadcast('ATTENDEE_RECORDED', { sessionId, attendee: attendeeRecord });
@@ -562,8 +679,11 @@ export function getSessionAttendees(sessionId) {
         session.slots.forEach((slot) => {
           if (
             slot.isBooked &&
-            (slot.booking.candidateContact.toLowerCase() === att.contact.toLowerCase() ||
-             slot.booking.candidateName.toLowerCase() === att.name.toLowerCase())
+            (
+              (att.email && slot.booking.candidateEmail && slot.booking.candidateEmail.toLowerCase() === att.email.toLowerCase()) ||
+              slot.booking.candidateContact.toLowerCase() === att.contact.toLowerCase() ||
+              slot.booking.candidateName.toLowerCase() === att.name.toLowerCase()
+            )
           ) {
             currentBooking = slot;
           }
@@ -607,11 +727,21 @@ export function getAllAttendees() {
 // Slot Booking (Atomic, 1 Slot Limit, Conflict Shield)
 // -------------------------------------------------------------
 
-export function bookSlot(sessionId, slotId, { candidateName, candidateContact }) {
+export function bookSlot(sessionId, slotId, { candidateName, candidateContact, candidateCategory = 'A', candidateEmail = '', candidatePhone = '' }) {
   const bookings = getRawBookings();
+  const blockedSlots = getRawBlockedSlots();
   const sessions = getRawSessions();
   const session = sessions.find((s) => s.id === sessionId);
   const key = `${sessionId}_${slotId}`;
+
+  // Check if slot is blocked by admin
+  if (blockedSlots[key]) {
+    return {
+      success: false,
+      conflict: true,
+      error: 'This time slot has been marked unavailable by the session administrator.'
+    };
+  }
 
   // Conflict check: Already taken?
   if (bookings[key]) {
@@ -631,11 +761,13 @@ export function bookSlot(sessionId, slotId, { candidateName, candidateContact })
 
   // 1-Person 1-Slot Rule Check
   const normalizedContact = candidateContact.trim().toLowerCase();
+  const normalizedEmail = candidateEmail.trim().toLowerCase();
   const normalizedName = candidateName.trim().toLowerCase();
 
   for (const [bookingKey, b] of Object.entries(bookings)) {
     if (bookingKey.startsWith(`${sessionId}_`) && bookingKey !== key) {
       if (
+        (normalizedEmail && b.candidateEmail && b.candidateEmail.toLowerCase() === normalizedEmail) ||
         (b.candidateContact && b.candidateContact.toLowerCase() === normalizedContact) ||
         (b.candidateName && b.candidateName.toLowerCase() === normalizedName)
       ) {
@@ -654,6 +786,9 @@ export function bookSlot(sessionId, slotId, { candidateName, candidateContact })
     slotId,
     candidateName: candidateName.trim(),
     candidateContact: candidateContact.trim(),
+    candidateCategory: candidateCategory || 'A',
+    candidateEmail: candidateEmail.trim(),
+    candidatePhone: candidatePhone.trim(),
     bookedAt: new Date().toISOString()
   };
 
@@ -662,7 +797,7 @@ export function bookSlot(sessionId, slotId, { candidateName, candidateContact })
 
   // Update attendee status
   const attendees = getRawAttendees();
-  const attKey = `${sessionId}_${normalizedContact}`;
+  const attKey = `${sessionId}_${(candidateEmail || candidateContact || candidateName).toLowerCase().trim()}`;
   if (attendees[attKey]) {
     attendees[attKey].status = 'booked';
     attendees[attKey].bookedSlotId = slotId;
@@ -682,7 +817,7 @@ export function bookSlot(sessionId, slotId, { candidateName, candidateContact })
     sessionId: sessionId,
     sessionTitle: session?.title || 'Session',
     actor: candidateName.trim(),
-    details: `Confirmed slot reservation (${bookingRecord.candidateContact})`
+    details: `Confirmed slot reservation for Category ${bookingRecord.candidateCategory} (${bookingRecord.candidateEmail || bookingRecord.candidateContact})`
   });
 
   broadcast('SLOT_BOOKED', { sessionId, slotId, booking: bookingRecord });
@@ -709,7 +844,7 @@ export function cancelBooking(sessionId, slotId) {
 
   // Revert attendee status
   const attendees = getRawAttendees();
-  const normalizedContact = removedBooking.candidateContact.toLowerCase();
+  const normalizedContact = (removedBooking.candidateEmail || removedBooking.candidateContact || '').toLowerCase();
   const attKey = `${sessionId}_${normalizedContact}`;
   if (attendees[attKey]) {
     attendees[attKey].status = 'checked_in';
@@ -760,6 +895,9 @@ export function getAllCandidates() {
       candidateList.push({
         id: key,
         candidateName: booking.candidateName,
+        candidateCategory: booking.candidateCategory || 'A',
+        candidateEmail: booking.candidateEmail || '',
+        candidatePhone: booking.candidatePhone || '',
         candidateContact: booking.candidateContact,
         bookedAt: booking.bookedAt,
         sessionId: session.id,
@@ -793,3 +931,128 @@ export function saveParticipantProfile(sessionId, profile) {
     console.error('Could not save participant profile:', e);
   }
 }
+
+export function clearParticipantProfile(sessionId) {
+  try {
+    if (sessionId) {
+      localStorage.removeItem(`${PARTICIPANT_KEY}_${sessionId}`);
+    }
+    localStorage.removeItem(PARTICIPANT_KEY);
+  } catch (e) {
+    console.error('Could not clear participant profile:', e);
+  }
+}
+
+export function updateParticipantProfile(sessionId, oldProfile, newProfile) {
+  const currentEdits = Number(oldProfile?.editCount) || 0;
+  if (currentEdits >= 2) {
+    throw new Error('You cannot edit your information more than two times.');
+  }
+
+  const newName = newProfile.name.trim();
+  const newCategory = newProfile.category || 'A';
+  const newEmail = (newProfile.email || '').trim();
+  const newPhone = (newProfile.phone || '').trim();
+  const newContact = (newProfile.contact || (newEmail && newPhone ? `${newEmail} • ${newPhone}` : newEmail || newPhone)).trim();
+  const nextEditCount = currentEdits + 1;
+
+  const oldName = oldProfile?.name ? oldProfile.name.trim() : '';
+  const oldEmail = oldProfile?.email ? oldProfile.email.trim() : '';
+  const oldContact = oldProfile?.contact ? oldProfile.contact.trim() : '';
+
+  const profileRecord = {
+    name: newName,
+    category: newCategory,
+    email: newEmail,
+    phone: newPhone,
+    contact: newContact,
+    editCount: nextEditCount
+  };
+
+  // Update localStorage profile
+  saveParticipantProfile(sessionId, profileRecord);
+
+  // Update attendees list
+  const attendees = getRawAttendees();
+  const oldKey = `${sessionId}_${(oldEmail || oldContact).toLowerCase()}`;
+  const newKey = `${sessionId}_${(newEmail || newContact).toLowerCase()}`;
+
+  let existingAtt = attendees[oldKey] || attendees[newKey];
+  if (existingAtt) {
+    if (oldKey !== newKey) {
+      delete attendees[oldKey];
+    }
+    attendees[newKey] = {
+      ...existingAtt,
+      id: newKey,
+      name: newName,
+      category: newCategory,
+      email: newEmail,
+      phone: newPhone,
+      contact: newContact,
+      editCount: nextEditCount,
+      lastSeenAt: new Date().toISOString()
+    };
+    saveRawAttendees(attendees);
+
+    if (isFirebaseConfigured() && db) {
+      if (oldKey !== newKey) {
+        deleteDoc(doc(db, 'attendees', oldKey)).catch(() => {});
+      }
+      setDoc(doc(db, 'attendees', newKey), attendees[newKey], { merge: true }).catch(() => {});
+    }
+  } else {
+    // Record as new attendee if missing
+    recordSessionAttendee(sessionId, profileRecord);
+  }
+
+  // Update any existing bookings with new name and contact info
+  const bookings = getRawBookings();
+  let bookingUpdated = false;
+
+  Object.keys(bookings).forEach((key) => {
+    if (key.startsWith(`${sessionId}_`)) {
+      const b = bookings[key];
+      const matchOldEmail = oldEmail && b.candidateEmail?.toLowerCase() === oldEmail.toLowerCase();
+      const matchOldContact = oldContact && b.candidateContact?.toLowerCase() === oldContact.toLowerCase();
+      const matchOldName = oldName && b.candidateName?.toLowerCase() === oldName.toLowerCase();
+      if (matchOldEmail || matchOldContact || matchOldName) {
+        bookings[key] = {
+          ...b,
+          candidateName: newName,
+          candidateCategory: newCategory,
+          candidateEmail: newEmail,
+          candidatePhone: newPhone,
+          candidateContact: newContact
+        };
+        bookingUpdated = true;
+
+        if (isFirebaseConfigured() && db) {
+          setDoc(doc(db, 'bookings', key), bookings[key], { merge: true }).catch(() => {});
+        }
+      }
+    }
+  });
+
+  if (bookingUpdated) {
+    saveRawBookings(bookings);
+  }
+
+  const sessions = getRawSessions();
+  const session = sessions.find((s) => s.id === sessionId);
+
+  logActivityEvent({
+    type: 'USER_UPDATED_INFO',
+    sessionId: sessionId,
+    sessionTitle: session?.title || 'Interview Session',
+    actor: newName,
+    details: `Updated info (Category ${newCategory}, ${newEmail}, ${newPhone}) [Edit ${nextEditCount}/2]`
+  });
+
+  broadcast('PARTICIPANT_UPDATED', { sessionId, profile: profileRecord });
+
+  return profileRecord;
+}
+
+
+

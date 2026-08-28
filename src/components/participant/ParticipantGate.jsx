@@ -4,12 +4,14 @@ import { formatDateDisplay } from '../../services/timeUtils';
 
 export default function ParticipantGate({ session, onGatePassed }) {
   const [name, setName] = useState('');
-  const [contact, setContact] = useState('');
+  const [category, setCategory] = useState('A');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
 
   // Validation helpers
-  const isValidEmail = (str) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str);
+  const isValidEmail = (str) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str.trim());
   const isValidPhone = (str) => /^[\+]?[(]?[0-9]{3}[)]?[-\s\.]?[0-9]{3}[-\s\.]?[0-9]{4,6}$/.test(str.replace(/\s+/g, '')) || str.replace(/\D/g, '').length >= 10;
 
   const handleSubmit = (e) => {
@@ -17,24 +19,27 @@ export default function ParticipantGate({ session, onGatePassed }) {
     setError('');
 
     const trimmedName = name.trim();
-    const trimmedContact = contact.trim();
+    const trimmedCategory = category;
+    const trimmedEmail = email.trim();
+    const trimmedPhone = phone.trim();
 
     if (!trimmedName || trimmedName.length < 2) {
       setError('Please enter your full name.');
       return;
     }
 
-    if (!trimmedContact) {
-      setError('Please provide your email address or phone number.');
+    if (!trimmedCategory) {
+      setError('Please select a Category (A, B, or C).');
       return;
     }
 
-    // Check if valid email or valid phone
-    const isEmail = isValidEmail(trimmedContact);
-    const isPhone = isValidPhone(trimmedContact);
+    if (!trimmedEmail || !isValidEmail(trimmedEmail)) {
+      setError('Please enter a valid email address (e.g. name@example.com).');
+      return;
+    }
 
-    if (!isEmail && !isPhone) {
-      setError('Please enter a valid email address (e.g. name@example.com) or phone number.');
+    if (!trimmedPhone || !isValidPhone(trimmedPhone)) {
+      setError('Please enter a valid phone number (e.g. +1 555-019-2834).');
       return;
     }
 
@@ -44,14 +49,22 @@ export default function ParticipantGate({ session, onGatePassed }) {
       // Record attendee check-in in the database immediately
       const attendee = recordSessionAttendee(session.id, {
         name: trimmedName,
-        contact: trimmedContact
+        category: trimmedCategory,
+        email: trimmedEmail,
+        phone: trimmedPhone,
+        contact: `${trimmedEmail} • ${trimmedPhone}`,
+        editCount: 0
       });
 
       setTimeout(() => {
         setIsSubmitting(false);
         onGatePassed({
           name: attendee.name,
-          contact: attendee.contact,
+          category: attendee.category || trimmedCategory,
+          email: attendee.email || trimmedEmail,
+          phone: attendee.phone || trimmedPhone,
+          contact: attendee.contact || `${trimmedEmail} • ${trimmedPhone}`,
+          editCount: 0,
           id: attendee.id
         });
       }, 200);
@@ -68,13 +81,13 @@ export default function ParticipantGate({ session, onGatePassed }) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        padding: '24px',
+        padding: '32px 20px',
         backgroundColor: 'var(--color-background)'
       }}
     >
-      <div className="card" style={{ maxWidth: '480px', width: '100%', padding: '36px 32px' }}>
-        {/* Header Branding */}
-        <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+      <div className="card" style={{ maxWidth: '540px', width: '100%', padding: '36px 32px' }}>
+        {/* Header / Session Info */}
+        <div style={{ textAlign: 'center', marginBottom: '28px' }}>
           <div
             style={{
               width: '56px',
@@ -89,29 +102,41 @@ export default function ParticipantGate({ session, onGatePassed }) {
             }}
           >
             <span className="material-symbols-outlined fill" style={{ fontSize: '28px' }}>
-              badge
+              calendar_month
             </span>
           </div>
 
-          <span className="chip chip-neutral" style={{ marginBottom: '12px' }}>
-            {session.timezone} Timezone • {session.slotDuration || 15} min slots
-          </span>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+            <span className="chip chip-accent">
+              <span className="material-symbols-outlined" style={{ fontSize: '14px', marginRight: '4px' }}>event</span>
+              {formatDateDisplay(session.date)}
+            </span>
+            <span className="chip chip-neutral">
+              <span className="material-symbols-outlined" style={{ fontSize: '14px', marginRight: '4px' }}>schedule</span>
+              {session.startTime} – {session.endTime} ({session.timezone})
+            </span>
+            <span className="chip chip-neutral">
+              <span className="material-symbols-outlined" style={{ fontSize: '14px', marginRight: '4px' }}>timer</span>
+              {session.slotDuration || 15} min interviews
+            </span>
+          </div>
 
           <h1 className="headline-md" style={{ color: 'var(--color-primary)', marginBottom: '8px' }}>
             {session.title}
           </h1>
 
           <p className="body-sm" style={{ color: 'var(--color-secondary)' }}>
-            Scheduled for <strong>{formatDateDisplay(session.date)}</strong> ({session.startTime} – {session.endTime})
+            Welcome to the interview self-scheduling portal. Please confirm your details below to view and select your preferred interview time slot.
           </p>
         </div>
 
-        {/* Informational Prompt */}
+        {/* Identity Check-in Prompt */}
         <div
           style={{
             padding: '12px 16px',
             borderRadius: 'var(--radius-md)',
             backgroundColor: 'var(--color-surface-container)',
+            border: '1px solid var(--color-outline-variant)',
             color: 'var(--color-on-surface-variant)',
             fontSize: '13px',
             marginBottom: '24px',
@@ -121,10 +146,10 @@ export default function ParticipantGate({ session, onGatePassed }) {
           }}
         >
           <span className="material-symbols-outlined" style={{ fontSize: '20px', color: 'var(--color-primary)' }}>
-            lock
+            badge
           </span>
           <div>
-            <strong>Identity Check-in:</strong> Please enter your details below to record your attendance and view available slots.
+            <strong>Step 1: Check In</strong> — Enter your details to record your attendance and unlock live slot booking.
           </div>
         </div>
 
@@ -147,22 +172,57 @@ export default function ParticipantGate({ session, onGatePassed }) {
             />
           </div>
 
-          <div style={{ marginBottom: '24px' }}>
-            <label className="input-label" htmlFor="cand-contact">
-              Email Address or Phone Number *
+          <div style={{ marginBottom: '16px' }}>
+            <label className="input-label" htmlFor="cand-category">
+              Category *
+            </label>
+            <select
+              id="cand-category"
+              className="input-field"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              required
+              disabled={isSubmitting}
+              style={{ backgroundColor: 'var(--color-surface)' }}
+            >
+              <option value="A">Category A</option>
+              <option value="B">Category B</option>
+              <option value="C">Category C</option>
+            </select>
+          </div>
+
+          <div style={{ marginBottom: '16px' }}>
+            <label className="input-label" htmlFor="cand-email">
+              Email Address *
             </label>
             <input
-              id="cand-contact"
-              type="text"
+              id="cand-email"
+              type="email"
               className="input-field"
-              placeholder="e.g. eleanor@example.com or +1 (555) 019-2834"
-              value={contact}
-              onChange={(e) => setContact(e.target.value)}
+              placeholder="e.g. eleanor@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              disabled={isSubmitting}
+            />
+          </div>
+
+          <div style={{ marginBottom: '24px' }}>
+            <label className="input-label" htmlFor="cand-phone">
+              Phone Number *
+            </label>
+            <input
+              id="cand-phone"
+              type="tel"
+              className="input-field"
+              placeholder="e.g. +1 (555) 019-2834"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
               required
               disabled={isSubmitting}
             />
             <span style={{ fontSize: '11px', color: 'var(--color-secondary)', display: 'block', marginTop: '4px' }}>
-              Your contact info will be used to record your attendance and confirm your interview slot.
+              Your email and phone will be used to record attendance and send your interview confirmation.
             </span>
           </div>
 
@@ -201,3 +261,4 @@ export default function ParticipantGate({ session, onGatePassed }) {
     </div>
   );
 }
+

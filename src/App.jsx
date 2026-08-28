@@ -4,6 +4,7 @@ import {
   getAllSessions,
   getSessionDetails,
   getParticipantProfile,
+  clearParticipantProfile,
   subscribeToSync
 } from './services/storage';
 import AdminDashboard from './components/admin/AdminDashboard';
@@ -117,18 +118,19 @@ export default function App() {
       );
     }
 
+    const handleUpdateParticipantProfile = (newProfile) => {
+      setParticipantProfiles((prev) => ({
+        ...prev,
+        [sessionId]: newProfile
+      }));
+    };
+
     return (
       <div>
         <ParticipantBoard
           session={session}
           participantProfile={currentProfile}
-          onSwitchProfile={() => {
-            setParticipantProfiles((prev) => {
-              const updated = { ...prev };
-              delete updated[sessionId];
-              return updated;
-            });
-          }}
+          onUpdateProfile={handleUpdateParticipantProfile}
           onShowToast={showToast}
         />
         <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
@@ -173,10 +175,8 @@ export default function App() {
   }
 
   // -------------------------------------------------------------
-  // Render Route 3: Welcome / Showcase Landing
+  // Render Route 3: Private Portal Notice (No Public Session Directory)
   // -------------------------------------------------------------
-  const allSessions = getAllSessions();
-
   return (
     <div style={{ minHeight: '100vh', backgroundColor: 'var(--color-background)', display: 'flex', flexDirection: 'column' }}>
       {/* Top Header */}
@@ -206,9 +206,9 @@ export default function App() {
           </div>
 
           <div style={{ display: 'flex', gap: '12px' }}>
-            <a href="#/admin" className="btn btn-primary">
+            <a href="#/admin" className="btn btn-secondary btn-sm">
               <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
-                admin_panel_settings
+                lock
               </span>
               <span>Admin Console</span>
             </a>
@@ -216,70 +216,70 @@ export default function App() {
         </div>
       </header>
 
-      {/* Hero Section */}
-      <main style={{ maxWidth: '960px', margin: '0 auto', padding: '60px 24px', flex: 1, width: '100%' }}>
-        <div style={{ textAlign: 'center', marginBottom: '48px' }}>
-          <span className="chip chip-accent" style={{ marginBottom: '16px', padding: '6px 14px' }}>
-            v2: Sessions Architecture
-          </span>
-          <h1 className="display-lg" style={{ color: 'var(--color-primary)', marginBottom: '16px' }}>
-            Real-Time Interview Scheduling
-          </h1>
-          <p className="body-lg" style={{ color: 'var(--color-secondary)', maxWidth: '640px', margin: '0 auto' }}>
-            Self-contained session booking boards with unique links, upfront identity gates, and live conflict prevention.
-          </p>
-
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '14px', marginTop: '28px' }}>
-            <a href="#/admin" className="btn btn-primary btn-lg">
-              <span className="material-symbols-outlined">dashboard</span>
-              <span>Open Admin Dashboard</span>
-            </a>
-          </div>
-        </div>
-
-        {/* Live Active Sessions Section */}
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-            <h2 className="headline-md" style={{ color: 'var(--color-primary)' }}>
-              Active Demo Sessions
-            </h2>
-            <span className="label-md" style={{ color: 'var(--color-secondary)' }}>
-              Click any link below to test participant booking
+      {/* Main Notice Section */}
+      <main style={{ maxWidth: '640px', margin: '0 auto', padding: '80px 24px', flex: 1, width: '100%', display: 'flex', alignItems: 'center' }}>
+        <div className="card" style={{ width: '100%', textAlign: 'center', padding: '48px 32px' }}>
+          <div
+            style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: 'var(--radius-full)',
+              backgroundColor: 'var(--color-secondary-container)',
+              color: 'var(--color-primary)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: '20px'
+            }}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: '32px' }}>
+              mail_lock
             </span>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px' }}>
-            {allSessions.map((s) => (
-              <div
-                key={s.id}
-                className="card"
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'space-between'
-                }}
-              >
-                <div>
-                  <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
-                    <span className="chip chip-neutral">{s.timezone}</span>
-                    <span className="chip chip-accent">{formatDateDisplay(s.date)}</span>
-                  </div>
-                  <h3 className="headline-sm" style={{ color: 'var(--color-primary)', marginBottom: '6px' }}>
-                    {s.title}
-                  </h3>
-                  <div style={{ fontSize: '12px', color: 'var(--color-secondary)', marginBottom: '14px' }}>
-                    {s.startTime} – {s.endTime} • {s.bookedCount} / {s.totalSlots} Booked
-                  </div>
-                </div>
+          <div style={{ marginBottom: '12px' }}>
+            <span className="chip chip-neutral">Invitation-Only Access</span>
+          </div>
 
-                <a href={`#/session/${s.id}`} className="btn btn-secondary btn-sm" style={{ width: '100%' }}>
-                  <span>Open Participant Board</span>
-                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
-                    open_in_new
-                  </span>
-                </a>
-              </div>
-            ))}
+          <h1 className="headline-lg" style={{ color: 'var(--color-primary)', marginBottom: '12px' }}>
+            Private Scheduling Portal
+          </h1>
+
+          <p className="body-md" style={{ color: 'var(--color-secondary)', marginBottom: '28px', lineHeight: 1.6 }}>
+            Interview sessions on ViewMe are private and confidential. To access your session booking board, 
+            please open the direct link sent to your email address by the coordinator.
+          </p>
+
+          <div
+            style={{
+              padding: '16px 20px',
+              borderRadius: 'var(--radius-md)',
+              backgroundColor: 'var(--color-surface-container)',
+              border: '1px solid var(--color-outline-variant)',
+              textAlign: 'left',
+              marginBottom: '28px',
+              display: 'flex',
+              gap: '12px',
+              alignItems: 'flex-start'
+            }}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: '20px', color: 'var(--color-primary)', marginTop: '2px' }}>
+              info
+            </span>
+            <div style={{ fontSize: '13px', color: 'var(--color-on-surface-variant)', lineHeight: 1.5 }}>
+              <strong>Looking for your interview?</strong>
+              <br />
+              Check your inbox for an email from your interview coordinator with the subject containing your session link.
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '12px' }}>
+            <a href="#/admin" className="btn btn-secondary">
+              <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                admin_panel_settings
+              </span>
+              <span>Coordinator Sign In</span>
+            </a>
           </div>
         </div>
       </main>
@@ -294,7 +294,7 @@ export default function App() {
           fontSize: '13px'
         }}
       >
-        ViewMe v2 (Sessions) — Safe & Minimalist Interview Coordination Design System
+        ViewMe — Confidential Interview Coordination System
       </footer>
 
       <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
