@@ -730,6 +730,38 @@ export function updateSessionMeetingLink(sessionId, meetingLink) {
   return { success: true, session: sessions[index] };
 }
 
+export function updateSessionDescription(sessionId, description) {
+  const sessions = getRawSessions();
+  const index = sessions.findIndex((s) => s.id === sessionId);
+  if (index === -1) return { success: false, error: 'Session not found.' };
+
+  const cleanDesc = (description || '').trim();
+  sessions[index] = {
+    ...sessions[index],
+    description: cleanDesc,
+    updatedAt: new Date().toISOString()
+  };
+
+  saveRawSessions(sessions);
+
+  if (isFirebaseConfigured() && db) {
+    setDoc(doc(db, 'sessions', sessionId), sessions[index], { merge: true }).catch((err) => {
+      console.warn('Could not sync updated session description to Firestore:', err);
+    });
+  }
+
+  logActivityEvent({
+    type: 'SESSION_UPDATED',
+    sessionId,
+    sessionTitle: sessions[index].title,
+    actor: 'Admin',
+    details: cleanDesc ? `Updated candidate instructions/description` : 'Cleared candidate instructions'
+  });
+
+  broadcast('SESSION_UPDATED', { sessionId, session: sessions[index] });
+  return { success: true, session: sessions[index] };
+}
+
 export function deleteSession(sessionId) {
   let sessions = getRawSessions();
   const sessionToDelete = sessions.find((s) => s.id === sessionId);

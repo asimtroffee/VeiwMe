@@ -5,6 +5,7 @@ import {
   cancelBooking,
   toggleSlotBlocked,
   updateSessionMeetingLink,
+  updateSessionDescription,
   subscribeToSync
 } from '../../services/storage';
 import { formatDateDisplay } from '../../services/timeUtils';
@@ -19,6 +20,8 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
   const [slotToCancel, setSlotToCancel] = useState(null);
   const [isEditingMeetingLink, setIsEditingMeetingLink] = useState(false);
   const [meetingLinkInput, setMeetingLinkInput] = useState('');
+  const [isEditingDescription, setIsEditingDescription] = useState(false);
+  const [descriptionInput, setDescriptionInput] = useState('');
 
   const scrollContainerRef = useRef(null);
 
@@ -70,6 +73,18 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
       loadData();
     } else {
       onShowToast(res.error || 'Failed to update meeting link.', 'error');
+    }
+  };
+
+  const handleSaveDescription = (e) => {
+    e.preventDefault();
+    const res = updateSessionDescription(sessionId, descriptionInput);
+    if (res.success) {
+      onShowToast(descriptionInput.trim() ? 'Candidate instructions saved!' : 'Instructions cleared.');
+      setIsEditingDescription(false);
+      loadData();
+    } else {
+      onShowToast(res.error || 'Failed to update instructions.', 'error');
     }
   };
 
@@ -472,11 +487,96 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
                 {session.slots[0]?.startTime} – {session.slots[session.slots.length - 1]?.endTime}
               </span>
             </div>
-            {session.description && (
-              <p className="body-sm" style={{ color: 'var(--color-on-surface-variant)', marginTop: '12px' }}>
-                {session.description}
-              </p>
-            )}
+            {/* Candidate Instructions / Description Section */}
+            <div
+              style={{
+                marginTop: '16px',
+                padding: '14px 16px',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: 'var(--color-surface-container)',
+                border: '1px solid var(--color-outline-variant)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: '20px', color: '#f59e0b' }}>
+                    description
+                  </span>
+                  <span style={{ fontWeight: '700', fontSize: '13px', color: 'var(--color-primary)' }}>
+                    Candidate Instructions & Description:
+                  </span>
+                </div>
+
+                {!isEditingDescription && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setDescriptionInput(session.description || '');
+                      setIsEditingDescription(true);
+                    }}
+                    style={{ fontSize: '12px', padding: '4px 8px' }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>edit</span>
+                    <span>{session.description ? 'Edit Instructions' : '+ Add Description'}</span>
+                  </button>
+                )}
+              </div>
+
+              {isEditingDescription ? (
+                <form onSubmit={handleSaveDescription} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <textarea
+                    className="input-field"
+                    value={descriptionInput}
+                    onChange={(e) => setDescriptionInput(e.target.value)}
+                    placeholder="e.g. Please join from a quiet room with video enabled. Have your portfolio and resume ready..."
+                    rows={4}
+                    style={{ fontSize: '13px', width: '100%', fontFamily: 'inherit', resize: 'vertical' }}
+                    autoFocus
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setIsEditingDescription(false)}
+                      style={{ fontSize: '12px', padding: '6px 12px' }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn btn-primary btn-sm"
+                      style={{ fontSize: '12px', padding: '6px 14px' }}
+                    >
+                      Save Instructions
+                    </button>
+                  </div>
+                </form>
+              ) : session.description ? (
+                <p
+                  className="body-sm"
+                  style={{
+                    color: 'var(--color-on-surface-variant)',
+                    backgroundColor: 'var(--color-surface)',
+                    padding: '10px 14px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--color-outline-variant)',
+                    whiteSpace: 'pre-wrap',
+                    lineHeight: 1.55,
+                    fontSize: '13px'
+                  }}
+                >
+                  {session.description}
+                </p>
+              ) : (
+                <span className="body-sm" style={{ color: 'var(--color-secondary)', fontStyle: 'italic', fontSize: '13px' }}>
+                  No candidate instructions provided yet. Click "+ Add Description" to write guidance for candidates.
+                </span>
+              )}
+            </div>
 
             {/* Video Meeting / Zoom Link Section */}
             <div

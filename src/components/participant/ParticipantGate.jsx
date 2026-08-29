@@ -130,6 +130,34 @@ export default function ParticipantGate({ session, onGatePassed }) {
           </p>
         </div>
 
+        {/* Eye-catching Candidate Instructions / Description Banner */}
+        {session.description && (
+          <div
+            style={{
+              padding: '14px 18px',
+              borderRadius: 'var(--radius-md)',
+              background: 'linear-gradient(135deg, rgba(254, 243, 199, 0.5) 0%, rgba(255, 251, 235, 0.95) 100%)',
+              border: '1.5px solid #f59e0b',
+              borderLeft: '5px solid #d97706',
+              marginBottom: '20px',
+              textAlign: 'left',
+              boxShadow: '0 3px 10px rgba(217, 119, 6, 0.08)'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+              <span className="material-symbols-outlined fill" style={{ fontSize: '18px', color: '#d97706' }}>
+                tips_and_updates
+              </span>
+              <span style={{ fontWeight: '800', fontSize: '12px', color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Important Candidate Instructions
+              </span>
+            </div>
+            <p style={{ color: '#78350f', fontSize: '13px', lineHeight: 1.55, margin: 0, whiteSpace: 'pre-wrap' }}>
+              {session.description}
+            </p>
+          </div>
+        )}
+
         {/* Identity Check-in Prompt */}
         <div
           style={{

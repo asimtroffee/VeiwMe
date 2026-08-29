@@ -923,13 +923,35 @@ export default function ParticipantBoard({ session: initialSession, participantP
                 </div>
 
                 {session.description && (
-                  <div style={{ borderTop: '1px solid var(--color-outline-variant)', paddingTop: '14px' }}>
-                    <div className="label-sm" style={{ color: 'var(--color-secondary)', marginBottom: '4px' }}>
-                      Instructions
+                  <div
+                    style={{
+                      borderTop: '1px solid var(--color-outline-variant)',
+                      paddingTop: '14px',
+                      marginTop: '4px'
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                      <span className="material-symbols-outlined fill" style={{ fontSize: '16px', color: '#d97706' }}>
+                        tips_and_updates
+                      </span>
+                      <span className="label-sm" style={{ color: '#92400e', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.4px', fontSize: '11px' }}>
+                        Candidate Instructions
+                      </span>
                     </div>
-                    <p className="body-sm" style={{ color: 'var(--color-on-surface-variant)' }}>
+                    <div
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: 'var(--radius-sm)',
+                        backgroundColor: '#fffbeb',
+                        border: '1px solid #fef3c7',
+                        color: '#78350f',
+                        fontSize: '12px',
+                        lineHeight: 1.5,
+                        whiteSpace: 'pre-wrap'
+                      }}
+                    >
                       {session.description}
-                    </p>
+                    </div>
                   </div>
                 )}
               </div>
@@ -938,6 +960,55 @@ export default function ParticipantBoard({ session: initialSession, participantP
 
           {/* Center Content: Interactive Time Stream & Slot Selection */}
           <section style={{ flex: 1, minWidth: '300px' }}>
+            {/* Eye-catching Candidate Instructions Banner */}
+            {session.description && (
+              <div
+                style={{
+                  padding: '16px 20px',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'linear-gradient(135deg, rgba(254, 243, 199, 0.45) 0%, rgba(255, 251, 235, 0.95) 100%)',
+                  border: '1px solid #fcd34d',
+                  borderLeft: '5px solid #f59e0b',
+                  marginBottom: '20px',
+                  boxShadow: '0 2px 10px rgba(245, 158, 11, 0.08)',
+                  display: 'flex',
+                  gap: '14px',
+                  alignItems: 'flex-start'
+                }}
+              >
+                <div
+                  style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: 'var(--radius-full)',
+                    backgroundColor: '#fef3c7',
+                    color: '#d97706',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
+                  }}
+                >
+                  <span className="material-symbols-outlined fill" style={{ fontSize: '20px' }}>
+                    tips_and_updates
+                  </span>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px', marginBottom: '4px' }}>
+                    <span style={{ fontWeight: '800', fontSize: '13px', color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                      Candidate Preparation & Instructions
+                    </span>
+                    <span className="chip chip-accent" style={{ fontSize: '10px', padding: '1px 7px' }}>
+                      Host Note
+                    </span>
+                  </div>
+                  <p style={{ color: '#78350f', fontSize: '13px', lineHeight: 1.6, margin: 0, whiteSpace: 'pre-wrap' }}>
+                    {session.description}
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Header & Filter Controls */}
             <div
               style={{
