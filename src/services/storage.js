@@ -3,13 +3,11 @@ import { db, isFirebaseConfigured } from './firebase';
 import {
   collection,
   doc,
-  setDoc,
+  getDoc,
   getDocs,
+  setDoc,
   deleteDoc,
-  onSnapshot,
-  query,
-  orderBy,
-  runTransaction
+  onSnapshot
 } from 'firebase/firestore';
 
 const SESSIONS_KEY = 'viewme_sessions_v2';
@@ -27,7 +25,7 @@ const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
 
 // Device & Client Metadata Helper
 function getClientMetadata() {
-  const ua = navigator.userAgent || '';
+  const ua = typeof navigator !== 'undefined' ? (navigator.userAgent || '') : '';
   let device = 'Desktop';
   if (/mobile/i.test(ua)) device = 'Mobile';
   else if (/tablet|ipad/i.test(ua)) device = 'Tablet';
@@ -35,7 +33,7 @@ function getClientMetadata() {
   return {
     device,
     userAgent: ua,
-    screenResolution: `${window.screen.width}x${window.screen.height}`,
+    screenResolution: typeof window !== 'undefined' && window.screen ? `${window.screen.width}x${window.screen.height}` : '1920x1080',
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   };
 }
@@ -43,15 +41,93 @@ function getClientMetadata() {
 // Broadcast channel for real-time local multi-tab sync
 let syncChannel = null;
 try {
-  syncChannel = new BroadcastChannel('viewme_sync_channel');
+  if (typeof window !== 'undefined' && window.BroadcastChannel) {
+    syncChannel = new BroadcastChannel('viewme_sync_channel');
+  }
 } catch (e) {
   console.warn('BroadcastChannel not supported:', e);
 }
 
 function broadcast(type, payload = {}) {
   if (syncChannel) {
-    syncChannel.postMessage({ type, payload, timestamp: Date.now() });
+    try {
+      syncChannel.postMessage({ type, payload, timestamp: Date.now() });
+    } catch (e) {
+      console.warn('broadcast error:', e);
+    }
   }
+}
+
+// Set up bidirectional live Firestore synchronization
+let firestoreListenersActive = false;
+
+export function initFirestoreLiveSync() {
+  if (firestoreListenersActive || !isFirebaseConfigured() || !db) return;
+  firestoreListenersActive = true;
+
+  try {
+    // 1. Live Sessions Listener
+    onSnapshot(collection(db, 'sessions'), (snapshot) => {
+      if (!snapshot.empty) {
+        const remoteSessions = [];
+        snapshot.forEach((d) => {
+          remoteSessions.push(d.data());
+        });
+        saveRawSessions(remoteSessions);
+        broadcast('SESSIONS_SYNCED', { sessions: remoteSessions });
+      }
+    }, (err) => console.warn('Firestore sessions listener warning:', err));
+
+    // 2. Live Bookings Listener
+    onSnapshot(collection(db, 'bookings'), (snapshot) => {
+      const remoteBookings = {};
+      snapshot.forEach((d) => {
+        remoteBookings[d.id] = d.data();
+      });
+      saveRawBookings(remoteBookings);
+      broadcast('BOOKINGS_SYNCED', { bookings: remoteBookings });
+    }, (err) => console.warn('Firestore bookings listener warning:', err));
+
+    // 3. Live Blocked Slots Listener
+    onSnapshot(collection(db, 'blocked_slots'), (snapshot) => {
+      const remoteBlocked = {};
+      snapshot.forEach((d) => {
+        remoteBlocked[d.id] = d.data();
+      });
+      saveRawBlockedSlots(remoteBlocked);
+      broadcast('BLOCKED_SYNCED', { blocked: remoteBlocked });
+    }, (err) => console.warn('Firestore blocked slots listener warning:', err));
+
+    // 4. Live Attendees Listener
+    onSnapshot(collection(db, 'attendees'), (snapshot) => {
+      const remoteAttendees = {};
+      snapshot.forEach((d) => {
+        remoteAttendees[d.id] = d.data();
+      });
+      saveRawAttendees(remoteAttendees);
+      broadcast('ATTENDEES_SYNCED', { attendees: remoteAttendees });
+    }, (err) => console.warn('Firestore attendees listener warning:', err));
+
+    // 5. Live Events Listener
+    onSnapshot(collection(db, 'events'), (snapshot) => {
+      if (!snapshot.empty) {
+        const remoteEvents = [];
+        snapshot.forEach((d) => {
+          remoteEvents.push(d.data());
+        });
+        remoteEvents.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        saveRawEvents(remoteEvents);
+        broadcast('EVENTS_SYNCED', { events: remoteEvents });
+      }
+    }, (err) => console.warn('Firestore events listener warning:', err));
+  } catch (e) {
+    console.warn('Error starting Firestore live sync:', e);
+  }
+}
+
+// Auto-start Firestore sync
+if (typeof window !== 'undefined') {
+  initFirestoreLiveSync();
 }
 
 export function subscribeToSync(callback) {
@@ -65,22 +141,61 @@ export function subscribeToSync(callback) {
     syncChannel.addEventListener('message', handler);
   }
 
-  // Firestore live listener if configured
-  let unsubscribeFirestore = null;
-  if (isFirebaseConfigured() && db) {
-    try {
-      unsubscribeFirestore = onSnapshot(collection(db, 'events'), () => {
-        callback({ type: 'FIRESTORE_SYNC' });
-      });
-    } catch (e) {
-      console.warn('Firestore live listener error:', e);
-    }
-  }
+  // Ensure Firestore is syncing
+  initFirestoreLiveSync();
 
   return () => {
     if (syncChannel) syncChannel.removeEventListener('message', callback);
-    if (unsubscribeFirestore) unsubscribeFirestore();
   };
+}
+
+// Direct cloud fetch for specific session (crucial for cross-device direct links)
+export async function fetchRemoteSession(sessionId) {
+  if (!sessionId) return null;
+
+  if (isFirebaseConfigured() && db) {
+    try {
+      const sessionDocRef = doc(db, 'sessions', sessionId);
+      const sessionSnap = await getDoc(sessionDocRef);
+      if (sessionSnap.exists()) {
+        const sessionData = sessionSnap.data();
+        const sessions = getRawSessions();
+        const existingIdx = sessions.findIndex((s) => s.id === sessionId);
+        if (existingIdx >= 0) {
+          sessions[existingIdx] = sessionData;
+        } else {
+          sessions.unshift(sessionData);
+        }
+        saveRawSessions(sessions);
+      }
+
+      // Also pull bookings & blocked slots for accurate slot availability
+      const [bookingsSnap, blockedSnap] = await Promise.all([
+        getDocs(collection(db, 'bookings')),
+        getDocs(collection(db, 'blocked_slots'))
+      ]);
+
+      if (!bookingsSnap.empty) {
+        const bookings = getRawBookings();
+        bookingsSnap.forEach((d) => {
+          bookings[d.id] = d.data();
+        });
+        saveRawBookings(bookings);
+      }
+
+      if (!blockedSnap.empty) {
+        const blocked = getRawBlockedSlots();
+        blockedSnap.forEach((d) => {
+          blocked[d.id] = d.data();
+        });
+        saveRawBlockedSlots(blocked);
+      }
+    } catch (err) {
+      console.warn('Could not fetch session directly from Firestore:', err);
+    }
+  }
+
+  return getSessionDetails(sessionId);
 }
 
 // -------------------------------------------------------------

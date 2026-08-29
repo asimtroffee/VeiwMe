@@ -3,6 +3,7 @@ import {
   isSessionAdminAuthenticated,
   getAllSessions,
   getSessionDetails,
+  fetchRemoteSession,
   getParticipantProfile,
   clearParticipantProfile,
   subscribeToSync
@@ -20,6 +21,9 @@ export default function App() {
   const [showAdminAuthModal, setShowAdminAuthModal] = useState(false);
   const [toast, setToast] = useState({ message: '', type: 'success' });
   const [participantProfiles, setParticipantProfiles] = useState({});
+  const [currentSession, setCurrentSession] = useState(null);
+  const [isLoadingSession, setIsLoadingSession] = useState(false);
+  const [sessionFetchAttempted, setSessionFetchAttempted] = useState(false);
 
   // Sync hash routing
   useEffect(() => {
@@ -30,32 +34,107 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  // Listen to cross-tab updates
-  useEffect(() => {
-    const unsubscribe = subscribeToSync(() => {
-      // triggers re-render
-      setIsAdminAuth(isSessionAdminAuthenticated());
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const showToast = (message, type = 'success') => {
-    setToast({ message, type });
-  };
-
   // Parse current route
   const hash = currentHash.replace(/^#\/?/, '');
   const isSessionRoute = hash.startsWith('session/');
   const sessionId = isSessionRoute ? hash.split('/')[1] : null;
   const isAdminRoute = hash === 'admin' || hash.startsWith('admin/');
 
+  // Fetch or sync session data whenever route changes or live sync fires
+  const loadActiveSession = async (targetSessionId) => {
+    if (!targetSessionId) return;
+
+    // Check local store first
+    const local = getSessionDetails(targetSessionId);
+    if (local) {
+      setCurrentSession(local);
+    } else {
+      setIsLoadingSession(true);
+    }
+
+    // Always fetch remote Firestore data to ensure freshness on every device
+    try {
+      const remote = await fetchRemoteSession(targetSessionId);
+      setCurrentSession(remote);
+    } catch (err) {
+      console.warn('Error fetching remote session:', err);
+    } finally {
+      setIsLoadingSession(false);
+      setSessionFetchAttempted(true);
+    }
+  };
+
+  useEffect(() => {
+    if (isSessionRoute && sessionId) {
+      setSessionFetchAttempted(false);
+      loadActiveSession(sessionId);
+    } else {
+      setCurrentSession(null);
+      setIsLoadingSession(false);
+      setSessionFetchAttempted(false);
+    }
+  }, [currentHash, isSessionRoute, sessionId]);
+
+  // Listen to live updates across tabs & Firestore
+  useEffect(() => {
+    const unsubscribe = subscribeToSync((eventData) => {
+      setIsAdminAuth(isSessionAdminAuthenticated());
+      if (sessionId) {
+        const fresh = getSessionDetails(sessionId);
+        if (fresh) {
+          setCurrentSession(fresh);
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, [sessionId]);
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+  };
+
   // -------------------------------------------------------------
   // Render Route 1: Session Participant Route
   // -------------------------------------------------------------
   if (isSessionRoute && sessionId) {
-    const session = getSessionDetails(sessionId);
+    if (isLoadingSession && !currentSession) {
+      return (
+        <div
+          style={{
+            minHeight: '100vh',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+            backgroundColor: 'var(--color-background)',
+            gap: '16px'
+          }}
+        >
+          <div
+            style={{
+              width: '44px',
+              height: '44px',
+              border: '4px solid var(--color-surface-container-high)',
+              borderTop: '4px solid var(--color-primary)',
+              borderRadius: '50%',
+              animation: 'spin 0.8s linear infinite'
+            }}
+          />
+          <style>{`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          `}</style>
+          <p className="body-md" style={{ color: 'var(--color-secondary)' }}>
+            Connecting to interview session...
+          </p>
+        </div>
+      );
+    }
 
-    if (!session) {
+    if (!currentSession && sessionFetchAttempted) {
       return (
         <div
           style={{
@@ -100,6 +179,10 @@ export default function App() {
       );
     }
 
+    if (!currentSession) {
+      return null;
+    }
+
     // Check if participant profile exists
     const currentProfile = participantProfiles[sessionId] || getParticipantProfile(sessionId);
 
@@ -107,7 +190,7 @@ export default function App() {
       return (
         <div>
           <ParticipantGate
-            session={session}
+            session={currentSession}
             onGatePassed={(profile) => {
               setParticipantProfiles((prev) => ({ ...prev, [sessionId]: profile }));
               showToast(`Welcome, ${profile.name}!`);
@@ -128,7 +211,7 @@ export default function App() {
     return (
       <div>
         <ParticipantBoard
-          session={session}
+          session={currentSession}
           participantProfile={currentProfile}
           onUpdateProfile={handleUpdateParticipantProfile}
           onShowToast={showToast}
