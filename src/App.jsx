@@ -329,7 +329,7 @@ export default function App() {
           </h1>
 
           <p className="body-md" style={{ color: 'var(--color-secondary)', marginBottom: '28px', lineHeight: 1.6 }}>
-            Interview sessions on ViewMe are private and confidential. To access your session booking board, 
+            Sessions on ViewMe are private and confidential. To access your session booking board, 
             please open the direct link sent to your email address by the coordinator.
           </p>
 
@@ -350,9 +350,9 @@ export default function App() {
               info
             </span>
             <div style={{ fontSize: '13px', color: 'var(--color-on-surface-variant)', lineHeight: 1.5 }}>
-              <strong>Looking for your interview?</strong>
+              <strong>Looking for your session?</strong>
               <br />
-              Check your inbox for an email from your interview coordinator with the subject containing your session link.
+              Check your inbox for an email from your coordinator with the subject containing your session link.
             </div>
           </div>
 
@@ -377,7 +377,7 @@ export default function App() {
           fontSize: '13px'
         }}
       >
-        ViewMe — Confidential Interview Coordination System
+        ViewMe — Confidential Scheduling Coordination System
       </footer>
 
       <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />

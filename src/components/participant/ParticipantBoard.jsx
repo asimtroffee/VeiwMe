@@ -6,6 +6,9 @@ import {
   cancelBooking,
   checkSlotChangeEligibility,
   updateParticipantProfile,
+  isTesterAccount,
+  resetTesterSessionState,
+  resetTesterSlotChangeLimit,
   subscribeToSync
 } from '../../services/storage';
 import {
@@ -33,6 +36,9 @@ export default function ParticipantBoard({ session: initialSession, participantP
   const [switchError, setSwitchError] = useState('');
   const [ineligibilityModal, setIneligibilityModal] = useState(null);
   const [isMobileDetailsOpen, setIsMobileDetailsOpen] = useState(false);
+  const [isTesterHudOpen, setIsTesterHudOpen] = useState(true);
+
+  const isTester = isTesterAccount(participantProfile);
 
   const scrollContainerRef = useRef(null);
 
@@ -50,9 +56,10 @@ export default function ParticipantBoard({ session: initialSession, participantP
   const canEdit = editCount < 2;
 
   const duration = session.slotDuration || 15;
+  const currentCategory = participantProfile?.category || session?.categories?.[0] || 'Category A';
 
   const loadData = () => {
-    const fresh = getSessionDetails(session.id);
+    const fresh = getSessionDetails(session.id, participantProfile?.category);
     if (fresh) {
       setSession(fresh);
     }
@@ -64,16 +71,17 @@ export default function ParticipantBoard({ session: initialSession, participantP
       loadData();
     });
     return () => unsubscribe();
-  }, [session.id]);
+  }, [session.id, participantProfile?.category]);
 
   // Check if current participant already has an active booking in this session
   const myBooking = useMemo(() => {
-    if (!session || !session.slots || !participantProfile) return null;
+    const candidateSlots = session?.allSlots || session?.slots;
+    if (!session || !candidateSlots || !participantProfile) return null;
     const pEmail = (participantProfile.email || '').toLowerCase();
     const pContact = (participantProfile.contact || '').toLowerCase();
     const pName = (participantProfile.name || '').toLowerCase();
 
-    return session.slots.find((slot) => {
+    return candidateSlots.find((slot) => {
       if (!slot.isBooked || !slot.booking) return false;
       const bEmail = (slot.booking.candidateEmail || '').toLowerCase();
       const bContact = (slot.booking.candidateContact || '').toLowerCase();
@@ -211,7 +219,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
       if (onUpdateProfile && res.updatedProfile) {
         onUpdateProfile(res.updatedProfile);
       }
-      onShowToast(`Interview time changed to ${slotToSwitch.timeLabel}! Opening Google Calendar...`);
+      onShowToast(`Booking time changed to ${slotToSwitch.timeLabel}! Opening Google Calendar...`);
       openGoogleCalendarDirectly({
         session,
         slot: slotToSwitch,
@@ -230,12 +238,47 @@ export default function ParticipantBoard({ session: initialSession, participantP
     if (!slotToCancel) return;
     const res = await cancelBooking(session.id, slotToCancel.id, participantProfile, true);
     if (res.success) {
-      onShowToast('Your interview slot booking has been cancelled.');
+      onShowToast('Your slot booking has been cancelled.');
       loadData();
     } else {
       onShowToast(res.error || 'Could not cancel booking.', 'error');
     }
     setSlotToCancel(null);
+  };
+
+  const handleResetMyTestBooking = async () => {
+    const res = await resetTesterSessionState(session.id, participantProfile.email || participantProfile.contact);
+    if (res.success) {
+      onShowToast('🧪 Test booking wiped! You can book any slot again from scratch.');
+      loadData();
+    }
+  };
+
+  const handleResetChangeLimit = () => {
+    const res = resetTesterSlotChangeLimit(session.id, participantProfile.email || participantProfile.contact);
+    if (res.success) {
+      onShowToast('🧪 Slot change limit reset! (1/1 changes available).');
+      loadData();
+    }
+  };
+
+  const handleQuickSwitchCategory = (newCat) => {
+    const updated = {
+      ...participantProfile,
+      category: newCat
+    };
+    if (onUpdateProfile) {
+      onUpdateProfile(updated);
+    }
+    onShowToast(`🧪 Switched to ${newCat} track!`);
+    loadData();
+  };
+
+  const handleExitTesterMode = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(`viewme_participant_${session.id}`);
+      window.location.reload();
+    }
   };
 
   // Validation helpers
@@ -426,7 +469,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
               </span>
             </div>
             <div style={{ fontSize: '12px', color: 'var(--color-secondary)', marginTop: '4px' }}>
-              {duration} min video interview • Instant reserve
+              {duration} min session • Instant reserve
             </div>
           </div>
         </div>
@@ -471,7 +514,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
                     Reserved for you ({participantProfile.name})
                   </div>
                   <div style={{ fontSize: '11px', color: 'var(--color-secondary)', marginTop: '2px' }}>
-                    Category {participantProfile.category || slot.booking?.candidateCategory || 'A'} • {duration} min interview
+                    Category {participantProfile.category || slot.booking?.candidateCategory || 'A'} • {duration} min slot
                   </div>
                 </>
               ) : (
@@ -598,6 +641,26 @@ export default function ParticipantBoard({ session: initialSession, participantP
 
           {/* Participant Profile & Edit Info */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            {isTester && (
+              <a
+                href="#/admin"
+                className="btn btn-secondary btn-sm"
+                style={{
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  borderColor: '#3b82f6',
+                  color: '#1d4ed8',
+                  backgroundColor: 'rgba(59, 130, 246, 0.08)'
+                }}
+                title="Return to Admin Dashboard"
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '16px', color: '#3b82f6' }}>arrow_back</span>
+                <span>Back to Admin</span>
+              </a>
+            )}
             <div
               style={{
                 display: 'flex',
@@ -721,7 +784,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
               </div>
               <div>
                 <div className="label-sm" style={{ color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                  <span>YOUR INTERVIEW IS CONFIRMED</span>
+                  <span>YOUR BOOKING IS CONFIRMED</span>
                   <span className="chip chip-accent" style={{ fontSize: '10px', padding: '1px 6px' }}>
                     Category {myBooking.booking.candidateCategory || participantProfile.category || 'A'}
                   </span>
@@ -845,7 +908,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
                     calendar_month
                   </span>
                   <h2 className="headline-md" style={{ color: 'var(--color-primary)', fontSize: '16px' }}>
-                    Interview Details
+                    Session Details
                   </h2>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1021,13 +1084,18 @@ export default function ParticipantBoard({ session: initialSession, participantP
               }}
             >
               <div>
-                <h2 className="headline-lg" style={{ color: 'var(--color-primary)' }}>
-                  Select an Interview Time
-                </h2>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                  <h2 className="headline-lg" style={{ color: 'var(--color-primary)' }}>
+                    Select a Time Slot
+                  </h2>
+                  <span className="chip chip-accent" style={{ fontSize: '11px', fontWeight: '700' }}>
+                    {participantProfile.category?.startsWith('Category') ? participantProfile.category : `Category ${participantProfile.category || 'A'}`} Track
+                  </span>
+                </div>
                 <p className="body-sm" style={{ color: 'var(--color-secondary)' }}>
                   {myBooking
                     ? 'You have already booked a slot. Cancel your slot above if you wish to change times.'
-                    : `Scroll through the schedule and pick your preferred ${duration}-minute slot.`}
+                    : `Showing full ${session.startTime} – ${session.endTime} schedule for ${participantProfile.category || 'Category A'} (${session.slots?.length || 0} seats).`}
                 </p>
               </div>
 
@@ -1239,7 +1307,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
             <div className="modal-drag-handle" />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
               <h3 className="headline-md" style={{ color: 'var(--color-primary)' }}>
-                Confirm Interview Booking
+                Confirm Booking
               </h3>
               <button onClick={() => setSelectedSlotForBooking(null)} style={{ color: 'var(--color-secondary)' }}>
                 <span className="material-symbols-outlined">close</span>
@@ -1399,7 +1467,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
             {switchStep === 1 && (
               <div>
                 <p className="body-sm" style={{ color: 'var(--color-secondary)', marginBottom: '16px' }}>
-                  You are switching your interview time for <strong>{formatDateDisplay(session.date)}</strong>. Please review your new selected slot:
+                  You are switching your booking time for <strong>{formatDateDisplay(session.date)}</strong>. Please review your new selected slot:
                 </p>
 
                 <div
@@ -1493,13 +1561,13 @@ export default function ParticipantBoard({ session: initialSession, participantP
                   </div>
                   <ul style={{ paddingLeft: '20px', color: '#b71c1c', fontSize: '13px', lineHeight: 1.55, display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     <li>
-                      Your interview will be moved to <strong>{slotToSwitch.timeLabel}</strong>.
+                      Your booking will be moved to <strong>{slotToSwitch.timeLabel}</strong>.
                     </li>
                     <li>
                       <strong>You will have 0 slot changes remaining.</strong>
                     </li>
                     <li>
-                      You will <strong>NOT</strong> be able to change, reschedule, or cancel this interview slot again.
+                      You will <strong>NOT</strong> be able to change, reschedule, or cancel this slot again.
                     </li>
                   </ul>
                 </div>
@@ -1528,7 +1596,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
                     onClick={(e) => e.stopPropagation()}
                   />
                   <label htmlFor="ack-final-lock" style={{ fontSize: '13px', color: 'var(--color-primary)', cursor: 'pointer', lineHeight: 1.45 }}>
-                    <strong>I understand and acknowledge</strong> that this is my <strong>only allowed change</strong>. After confirming, my interview time will be permanently locked and cannot be changed again.
+                    <strong>I understand and acknowledge</strong> that this is my <strong>only allowed change</strong>. After confirming, my scheduled time will be permanently locked and cannot be changed again.
                   </label>
                 </div>
 
@@ -1625,7 +1693,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
             >
               <strong>Policy Guidelines:</strong>
               <ul style={{ marginTop: '6px', paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <li>Maximum of 1 interview slot change per candidate.</li>
+                <li>Maximum of 1 slot change per candidate.</li>
                 <li>Changes and cancellations must be made &gt; 3 hours before start time.</li>
               </ul>
             </div>
@@ -1646,8 +1714,8 @@ export default function ParticipantBoard({ session: initialSession, participantP
       {/* Confirmation Modal for Self-Cancellation */}
       <ConfirmModal
         isOpen={Boolean(slotToCancel)}
-        title="Cancel Your Interview Booking?"
-        message={`Are you sure you want to cancel your ${slotToCancel?.timeLabel} interview slot? Note that cancelling will count as your 1 permitted slot change. You will be able to book another open slot if available.`}
+        title="Cancel Your Booking?"
+        message={`Are you sure you want to cancel your ${slotToCancel?.timeLabel} slot? Note that cancelling will count as your 1 permitted slot change. You will be able to book another open slot if available.`}
         confirmText="Yes, Cancel Booking"
         cancelText="Keep My Booking"
         isDanger={true}
@@ -1748,9 +1816,11 @@ export default function ParticipantBoard({ session: initialSession, participantP
                   disabled={isSavingEdit}
                   style={{ backgroundColor: 'var(--color-surface)' }}
                 >
-                  <option value="A">Category A</option>
-                  <option value="B">Category B</option>
-                  <option value="C">Category C</option>
+                  {(session?.categories || ['Category A', 'Category B', 'Category C']).map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat.startsWith('Category') ? cat : `Category ${cat}`}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -1831,6 +1901,158 @@ export default function ParticipantBoard({ session: initialSession, participantP
             </form>
           </div>
         </div>
+      )}
+
+      {/* Floating Invisible Tester HUD Toolbelt (Only visible to tester account) */}
+      {isTester && (
+        <aside
+          aria-label="Tester Controls"
+          style={{
+            position: 'fixed',
+            bottom: '20px',
+            right: '20px',
+            zIndex: 9999,
+            maxWidth: '340px',
+            width: isTesterHudOpen ? 'calc(100vw - 40px)' : 'auto',
+            borderRadius: 'var(--radius-lg)',
+            backgroundColor: '#1e293b',
+            color: '#f8fafc',
+            boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3)',
+            border: '1.5px solid #3b82f6',
+            overflow: 'hidden',
+            transition: 'all 0.2s ease'
+          }}
+        >
+          {/* Header / Collapse Bar */}
+          <div
+            onClick={() => setIsTesterHudOpen(!isTesterHudOpen)}
+            style={{
+              padding: '10px 14px',
+              backgroundColor: '#0f172a',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              cursor: 'pointer',
+              userSelect: 'none',
+              borderBottom: isTesterHudOpen ? '1px solid #334155' : 'none'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#60a5fa' }}>
+                science
+              </span>
+              <span style={{ fontSize: '12px', fontWeight: '800', letterSpacing: '0.4px', textTransform: 'uppercase', color: '#93c5fd' }}>
+                Invisible Tester Sandbox
+              </span>
+            </div>
+            <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#94a3b8' }}>
+              {isTesterHudOpen ? 'expand_more' : 'expand_less'}
+            </span>
+          </div>
+
+          {/* Tester Action Panel */}
+          {isTesterHudOpen && (
+            <div style={{ padding: '14px' }}>
+              <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '10px' }}>
+                Testing as: <strong style={{ color: '#ffffff' }}>{participantProfile.name}</strong> • Track: <strong style={{ color: '#38bdf8' }}>{participantProfile.category || 'A'}</strong>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={handleResetMyTestBooking}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    backgroundColor: '#ef4444',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    cursor: 'pointer'
+                  }}
+                  title="Wipe your booking so you can test reserving from scratch"
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>restart_alt</span>
+                  <span>Reset & Wipe My Booking</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleResetChangeLimit}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    backgroundColor: '#3b82f6',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    cursor: 'pointer'
+                  }}
+                  title="Reset your change counter to 0/1 used"
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>lock_open</span>
+                  <span>Reset Slot Change Limit (0/1 Used)</span>
+                </button>
+
+                {/* Quick Track Switcher */}
+                <div style={{ marginTop: '4px' }}>
+                  <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#94a3b8', marginBottom: '4px' }}>
+                    Quick-Switch Track:
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    {(session.categories || ['Category A', 'Category B', 'Category C']).map((cat) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => handleQuickSwitchCategory(cat)}
+                        style={{
+                          flex: 1,
+                          padding: '4px 6px',
+                          borderRadius: '4px',
+                          fontSize: '11px',
+                          fontWeight: '700',
+                          backgroundColor: participantProfile.category === cat ? '#38bdf8' : '#334155',
+                          color: participantProfile.category === cat ? '#0f172a' : '#f8fafc',
+                          border: 'none',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {cat.replace('Category ', '')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleExitTesterMode}
+                  style={{
+                    marginTop: '4px',
+                    padding: '6px',
+                    backgroundColor: 'transparent',
+                    color: '#94a3b8',
+                    border: '1px solid #475569',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '11px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  🚪 Exit & Reset Check-In Gate
+                </button>
+              </div>
+            </div>
+          )}
+        </aside>
       )}
     </div>
   );

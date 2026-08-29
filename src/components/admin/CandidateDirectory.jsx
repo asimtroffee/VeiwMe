@@ -27,7 +27,7 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
     if (!candidateToCancel) return;
     const res = cancelBooking(candidateToCancel.sessionId, candidateToCancel.slotId);
     if (res.success) {
-      onShowToast(`Cancelled interview for ${candidateToCancel.candidateName}`);
+      onShowToast(`Cancelled booking for ${candidateToCancel.candidateName}`);
       loadData();
     }
     setCandidateToCancel(null);
@@ -280,7 +280,7 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
           </div>
         ) : (
           <div className="card" style={{ textAlign: 'center', padding: '40px', color: 'var(--color-secondary)' }}>
-            {searchQuery ? 'No bookings matched your search criteria.' : 'No candidates have booked interview slots yet.'}
+            {searchQuery ? 'No bookings matched your search criteria.' : 'No candidates have booked slots yet.'}
           </div>
         )
       ) : (
@@ -367,8 +367,8 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
       {/* Cancel Candidate Confirmation */}
       <ConfirmModal
         isOpen={Boolean(candidateToCancel)}
-        title="Cancel Interview"
-        message={`Are you sure you want to cancel the interview for ${candidateToCancel?.candidateName} on ${formatDateDisplay(candidateToCancel?.sessionDate)} at ${candidateToCancel?.slotTimeLabel}?`}
+        title="Cancel Booking"
+        message={`Are you sure you want to cancel the booking for ${candidateToCancel?.candidateName} on ${formatDateDisplay(candidateToCancel?.sessionDate)} at ${candidateToCancel?.slotTimeLabel}?`}
         confirmText="Yes, Cancel Booking"
         cancelText="Keep Booking"
         isDanger={true}

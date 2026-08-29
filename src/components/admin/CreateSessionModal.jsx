@@ -13,11 +13,13 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
   const [title, setTitle] = useState('');
   const [date, setDate] = useState(defaultDate);
   const [startTime, setStartTime] = useState('09:00');
-  const [endTime, setEndTime] = useState('13:00');
+  const [endTime, setEndTime] = useState('16:00');
   const [slotDuration, setSlotDuration] = useState(15);
   const [timezone, setTimezone] = useState('EST');
   const [description, setDescription] = useState('');
   const [meetingLink, setMeetingLink] = useState('');
+  const [categories, setCategories] = useState(['Category A', 'Category B', 'Category C']);
+  const [newCategoryInput, setNewCategoryInput] = useState('');
   const [error, setError] = useState('');
 
   const previewSlots = useMemo(() => {
@@ -26,12 +28,38 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
 
   if (!isOpen) return null;
 
+  const handleAddCategory = (e) => {
+    if (e) e.preventDefault();
+    const clean = newCategoryInput.trim();
+    if (!clean) return;
+    if (categories.some((c) => c.toLowerCase() === clean.toLowerCase())) {
+      setError(`Category "${clean}" already exists.`);
+      return;
+    }
+    setCategories([...categories, clean]);
+    setNewCategoryInput('');
+    setError('');
+  };
+
+  const handleRemoveCategory = (catToRemove) => {
+    if (categories.length <= 1) {
+      setError('A session must have at least 1 category.');
+      return;
+    }
+    setCategories(categories.filter((c) => c !== catToRemove));
+    setError('');
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
     setError('');
 
     if (!title.trim()) {
       setError('Please provide a session name or cohort label.');
+      return;
+    }
+    if (categories.length === 0) {
+      setError('Please add at least one category.');
       return;
     }
     if (previewSlots.length === 0) {
@@ -47,7 +75,8 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
       slotDuration: Number(slotDuration),
       timezone,
       description,
-      meetingLink
+      meetingLink,
+      categories
     });
 
     onCreated(session);
@@ -75,7 +104,7 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
               id="sess-title"
               type="text"
               className="input-field"
-              placeholder="e.g. Marketing Cohort — Interview Day"
+              placeholder="e.g. Q&A 15 min"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               required
@@ -86,7 +115,7 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '16px' }}>
             <div>
               <label className="input-label" htmlFor="sess-date">
-                Interview Date *
+                Session Date *
               </label>
               <input
                 id="sess-date"
@@ -99,7 +128,7 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
             </div>
             <div>
               <label className="input-label" htmlFor="sess-tz">
-                Timezone
+                Timezone *
               </label>
               <select
                 id="sess-tz"
@@ -107,16 +136,22 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
                 value={timezone}
                 onChange={(e) => setTimezone(e.target.value)}
               >
-                <option value="EST">EST (Eastern)</option>
-                <option value="CST">CST (Central)</option>
-                <option value="MST">MST (Mountain)</option>
-                <option value="PST">PST (Pacific)</option>
-                <option value="GMT">GMT / UTC</option>
-                <option value="CET">CET (Central European)</option>
+                <option value="EST">EST (Eastern Standard Time)</option>
+                <option value="CST">CST (Central Standard Time)</option>
+                <option value="MST">MST (Mountain Standard Time)</option>
+                <option value="PST">PST (Pacific Standard Time)</option>
+                <option value="UTC">UTC (Universal Coordinated Time)</option>
+                <option value="GMT">GMT (Greenwich Mean Time)</option>
+                <option value="BST">BST (British Summer Time)</option>
+                <option value="CET">CET (Central European Time)</option>
+                <option value="IST">IST (India Standard Time)</option>
+                <option value="SGT">SGT (Singapore Time)</option>
+                <option value="AEST">AEST (Australian Eastern Time)</option>
               </select>
             </div>
           </div>
 
+          {/* Time Window & Duration Settings */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '16px' }}>
             <div>
               <label className="input-label" htmlFor="sess-start">
@@ -145,58 +180,123 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
               />
             </div>
             <div>
-              <label className="input-label" htmlFor="sess-duration">
+              <label className="input-label" htmlFor="sess-dur">
                 Slot Length *
               </label>
               <select
-                id="sess-duration"
+                id="sess-dur"
                 className="input-field"
                 value={slotDuration}
                 onChange={(e) => setSlotDuration(Number(e.target.value))}
               >
-                <option value={10}>10 Mins</option>
-                <option value={15}>15 Mins (Standard)</option>
-                <option value={20}>20 Mins</option>
-                <option value={30}>30 Mins</option>
-                <option value={45}>45 Mins</option>
-                <option value={60}>60 Mins (1 Hour)</option>
+                <option value={10}>10 minutes</option>
+                <option value={15}>15 minutes</option>
+                <option value={20}>20 minutes</option>
+                <option value={30}>30 minutes</option>
+                <option value={45}>45 minutes</option>
+                <option value={60}>60 minutes</option>
               </select>
             </div>
           </div>
 
-          {/* Slot Generation Live Preview */}
-          <div
-            style={{
-              padding: '12px 16px',
-              borderRadius: 'var(--radius-md)',
-              backgroundColor: previewSlots.length > 0 ? 'var(--color-secondary-container)' : 'var(--color-error-container)',
-              color: previewSlots.length > 0 ? 'var(--color-primary)' : 'var(--color-on-error-container)',
-              marginBottom: '16px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px'
-            }}
-          >
-            <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>
-              {previewSlots.length > 0 ? 'auto_awesome' : 'warning'}
-            </span>
-            <div style={{ fontSize: '13px' }}>
-              {previewSlots.length > 0 ? (
-                <>
-                  Generates <strong>{previewSlots.length} slots</strong> ({slotDuration} minutes each)
-                  <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>
-                    From {previewSlots[0].startTime} to {previewSlots[previewSlots.length - 1].endTime}
-                  </div>
-                </>
-              ) : (
-                `End time must be at least ${slotDuration} minutes after start time.`
-              )}
+          {/* Category Configuration & Management */}
+          <div style={{ marginBottom: '16px' }}>
+            <label className="input-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>Categories / Tracks ({categories.length}) *</span>
+              <span style={{ fontSize: '11px', color: 'var(--color-secondary)' }}>Each category receives a full 9am–4pm schedule</span>
+            </label>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+              {categories.map((cat) => (
+                <span
+                  key={cat}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    backgroundColor: 'var(--color-secondary-container)',
+                    color: 'var(--color-primary)',
+                    padding: '4px 10px',
+                    borderRadius: 'var(--radius-full)',
+                    fontSize: '12px',
+                    fontWeight: '600'
+                  }}
+                >
+                  <span>{cat}</span>
+                  {categories.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveCategory(cat)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--color-secondary)',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: 0
+                      }}
+                      title={`Remove ${cat}`}
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
+                    </button>
+                  )}
+                </span>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input
+                type="text"
+                className="input-field"
+                placeholder="Add new category (e.g. Category D or Leadership)"
+                value={newCategoryInput}
+                onChange={(e) => setNewCategoryInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddCategory();
+                  }
+                }}
+                style={{ fontSize: '13px' }}
+              />
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={handleAddCategory}
+                style={{ whiteSpace: 'nowrap' }}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>add</span>
+                <span>Add Track</span>
+              </button>
             </div>
           </div>
 
+          <div
+            style={{
+              padding: '10px 14px',
+              borderRadius: 'var(--radius-md)',
+              backgroundColor: 'var(--color-surface-container)',
+              fontSize: '12px',
+              color: 'var(--color-secondary)',
+              marginBottom: '16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>info</span>
+              <span>
+                {Math.max(1, calculateSlotCount())} slots per track × {categories.length} categories = <strong>{totalGeneratedSlots} total seats</strong>
+              </span>
+            </div>
+          </div>
+
+          {/* Zoom / Video Meeting Link */}
           <div style={{ marginBottom: '16px' }}>
             <label className="input-label" htmlFor="sess-zoom" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#2D8CFF' }}>videocam</span>
+              <span className="material-symbols-outlined" style={{ fontSize: '16px', color: '#2D8CFF' }}>videocam</span>
               <span>Zoom / Video Meeting Link (Optional)</span>
             </label>
             <input
@@ -208,7 +308,7 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
               onChange={(e) => setMeetingLink(e.target.value)}
             />
             <div style={{ fontSize: '11px', color: 'var(--color-secondary)', marginTop: '4px' }}>
-              Candidates will receive this link upon booking to join the interview.
+              Candidates will receive this link upon booking to join the session.
             </div>
           </div>
 

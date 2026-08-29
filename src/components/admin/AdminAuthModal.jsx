@@ -57,7 +57,7 @@ export default function AdminAuthModal({ isOpen, onSuccess, onCancel }) {
             Admin Access Required
           </h2>
           <p className="body-sm" style={{ color: 'var(--color-on-surface-variant)' }}>
-            Enter the master administrator password to view and manage interview sessions.
+            Enter the master administrator password to view and manage sessions.
           </p>
         </div>
 

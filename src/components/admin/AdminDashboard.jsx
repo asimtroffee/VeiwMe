@@ -233,7 +233,7 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
                   Sessions & Schedules
                 </h1>
                 <p className="body-sm" style={{ color: 'var(--color-secondary)' }}>
-                  Create self-contained interview sessions and generate unique booking links.
+                  Create self-contained sessions and generate unique booking links.
                 </p>
               </div>
 

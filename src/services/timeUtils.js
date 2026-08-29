@@ -32,7 +32,7 @@ export function getSlotPeriod(startMinutes) {
 /**
  * Generate 15-minute slot definitions between start and end time
  */
-export function generateTimeSlots(startTime24, endTime24, slotDurationMinutes = 15) {
+export function generateTimeSlots(startTime24, endTime24, slotDurationMinutes = 15, category = null) {
   const startMins = timeToMinutes(startTime24);
   const endMins = timeToMinutes(endTime24);
 
@@ -48,9 +48,13 @@ export function generateTimeSlots(startTime24, endTime24, slotDurationMinutes = 
     const startFormatted = minutesTo12Hour(currentMins);
     const endFormatted = minutesTo12Hour(nextMins);
     const period = getSlotPeriod(currentMins);
+    const baseId = `slot_${currentMins}_${nextMins}`;
+    const slotId = category ? `slot_${category}_${currentMins}_${nextMins}` : baseId;
 
     slots.push({
-      id: `slot_${currentMins}_${nextMins}`,
+      id: slotId,
+      baseId: baseId,
+      category: category || null,
       startTime: startFormatted,
       endTime: endFormatted,
       startMinutes: currentMins,
@@ -250,26 +254,28 @@ export function generateGoogleCalendarUrl({ session, slot, candidateProfile, boo
   const startUtc = toGCalUtcString(startDate);
   const endUtc = toGCalUtcString(endDate);
 
-  const title = `Interview: ${session.title || 'Scheduled Interview'}`;
-  const candidateName = candidateProfile?.name || booking?.candidateName || 'Candidate';
+  const title = session.title || 'Scheduled Session';
+  const candidateName = candidateProfile?.name || booking?.candidateName || 'Participant';
   const category = candidateProfile?.category || booking?.candidateCategory || 'A';
   const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
 
   const meetingUrl = session.meetingLink ? session.meetingLink.trim() : '';
 
   const descriptionLines = [
-    meetingUrl ? `🎥 JOIN ZOOM MEETING LINK:\n${meetingUrl}\n` : '🎥 Meeting link will be provided by host.\n',
+    meetingUrl
+      ? `🚀 JOIN ZOOM MEETING:\n${meetingUrl}\n\n⚠️ IMPORTANT: Please join via the Zoom link above (this meeting is hosted on Zoom).\n`
+      : '🎥 Meeting link will be provided by host.\n',
     `══════════════════════════════════`,
-    `Interview Session: ${session.title}`,
+    `Session: ${session.title}`,
     `Date: ${formatDateDisplay(session.date)}`,
     `Time: ${slot.timeLabel} (${session.timezone || 'Local Time'})`,
-    `Candidate: ${candidateName} (Category ${category})`,
+    `Participant: ${candidateName} (Category ${category})`,
     session.description ? `\nSession Instructions:\n${session.description}` : '',
-    `\nManage / Reschedule Interview: ${currentUrl}`
+    `\nManage / Change Slot: ${currentUrl}`
   ].filter(Boolean);
 
   const description = descriptionLines.join('\n');
-  const location = meetingUrl || 'Online Video Meeting (Zoom / Google Meet)';
+  const location = meetingUrl || 'Online Video Meeting (Zoom)';
 
   const params = new URLSearchParams({
     action: 'TEMPLATE',
@@ -279,10 +285,6 @@ export function generateGoogleCalendarUrl({ session, slot, candidateProfile, boo
     location: location
   });
 
-  if (candidateProfile?.email || booking?.candidateEmail) {
-    params.append('add', (candidateProfile?.email || booking?.candidateEmail).trim());
-  }
-
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
 
@@ -290,23 +292,17 @@ export function generateGoogleCalendarUrl({ session, slot, candidateProfile, boo
  * Directly trigger open Google Calendar in new tab
  */
 export function openGoogleCalendarDirectly({ session, slot, candidateProfile, booking }) {
-  try {
-    const url = generateGoogleCalendarUrl({ session, slot, candidateProfile, booking });
-    if (url && typeof window !== 'undefined') {
-      window.open(url, '_blank', 'noopener,noreferrer');
-      return true;
-    }
-  } catch (e) {
-    console.warn('Failed to open Google Calendar:', e);
+  const url = generateGoogleCalendarUrl({ session, slot, candidateProfile, booking });
+  if (url && typeof window !== 'undefined') {
+    window.open(url, '_blank', 'noopener,noreferrer');
   }
-  return false;
 }
 
 /**
- * Generate and download standard .ics calendar invite (works with Apple Calendar / Outlook)
+ * Generates an RFC 5545 compliant iCalendar (.ics) file
  */
 export function downloadIcsFile({ session, slot, candidateProfile, booking }) {
-  if (!session || !slot || typeof window === 'undefined') return;
+  if (!session || !slot) return;
 
   const startDate = getSlotStartDateTime(session.date, slot);
   const endDate = getSlotEndDateTime(session.date, slot, session.slotDuration || 15);
@@ -317,16 +313,16 @@ export function downloadIcsFile({ session, slot, candidateProfile, booking }) {
   const endUtc = toGCalUtcString(endDate);
   const nowUtc = toGCalUtcString(new Date());
 
-  const candidateName = candidateProfile?.name || booking?.candidateName || 'Candidate';
+  const candidateName = candidateProfile?.name || booking?.candidateName || 'Participant';
   const category = candidateProfile?.category || booking?.candidateCategory || 'A';
-  const title = `Interview: ${session.title || 'Scheduled Interview'}`;
+  const title = session.title || 'Scheduled Session';
   const uid = `viewme-${session.id}-${slot.id || 'slot'}-${Date.now()}@viewme.app`;
   const meetingUrl = session.meetingLink ? session.meetingLink.trim() : '';
 
   const icsDescription = [
     meetingUrl ? `🎥 JOIN ZOOM MEETING: ${meetingUrl}\\n` : '',
-    `Interview Session: ${session.title}`,
-    `Candidate: ${candidateName} (Category ${category})`,
+    `Session: ${session.title}`,
+    `Participant: ${candidateName} (Category ${category})`,
     session.description ? `Instructions: ${session.description}` : '',
     `Portal: ${window.location.href}`
   ].filter(Boolean).join('\\n');
@@ -334,7 +330,7 @@ export function downloadIcsFile({ session, slot, candidateProfile, booking }) {
   const icsContent = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//ViewMe//Interview Scheduler v2.0//EN',
+    'PRODID:-//ViewMe//Scheduler v2.0//EN',
     'CALSCALE:GREGORIAN',
     'METHOD:REQUEST',
     'BEGIN:VEVENT',
@@ -354,7 +350,7 @@ export function downloadIcsFile({ session, slot, candidateProfile, booking }) {
   const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
-  link.setAttribute('download', `interview-${session.id}.ics`);
+  link.setAttribute('download', `session-${session.id}.ics`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

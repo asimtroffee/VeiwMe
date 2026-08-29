@@ -1,10 +1,14 @@
 import React, { useState } from 'react';
-import { recordSessionAttendee } from '../../services/storage';
+import { recordSessionAttendee, isTesterAccount } from '../../services/storage';
 import { formatDateDisplay } from '../../services/timeUtils';
 
 export default function ParticipantGate({ session, onGatePassed }) {
+  const sessionCategories = session?.categories && session.categories.length > 0
+    ? session.categories
+    : ['Category A', 'Category B', 'Category C'];
+
   const [name, setName] = useState('');
-  const [category, setCategory] = useState('A');
+  const [category, setCategory] = useState(sessionCategories[0] || 'Category A');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -29,7 +33,7 @@ export default function ParticipantGate({ session, onGatePassed }) {
     }
 
     if (!trimmedCategory) {
-      setError('Please select a Category (A, B, or C).');
+      setError('Please select a Category.');
       return;
     }
 
@@ -38,10 +42,7 @@ export default function ParticipantGate({ session, onGatePassed }) {
       return;
     }
 
-    if (!trimmedPhone || !isValidPhone(trimmedPhone)) {
-      setError('Please enter a valid phone number (e.g. +1 555-019-2834).');
-      return;
-    }
+    const isTester = isTesterAccount({ email: trimmedEmail, contact: `${trimmedEmail} • ${trimmedPhone}`, name: trimmedName });
 
     setIsSubmitting(true);
 
@@ -53,7 +54,8 @@ export default function ParticipantGate({ session, onGatePassed }) {
         email: trimmedEmail,
         phone: trimmedPhone,
         contact: `${trimmedEmail} • ${trimmedPhone}`,
-        editCount: 0
+        editCount: 0,
+        isTester
       });
 
       setTimeout(() => {
@@ -65,7 +67,8 @@ export default function ParticipantGate({ session, onGatePassed }) {
           phone: attendee.phone || trimmedPhone,
           contact: attendee.contact || `${trimmedEmail} • ${trimmedPhone}`,
           editCount: 0,
-          id: attendee.id
+          id: attendee.id,
+          isTester
         });
       }, 200);
     } catch (err) {
@@ -74,17 +77,41 @@ export default function ParticipantGate({ session, onGatePassed }) {
     }
   };
 
+  const handleFillTester = (e) => {
+    if (e) e.preventDefault();
+    setName('Admin QA Tester');
+    setCategory(sessionCategories[0] || 'Category A');
+    setEmail('tester@viewme.internal');
+    setPhone('+1 555-000-TEST');
+    setError('');
+  };
+
   return (
     <div
       style={{
         minHeight: '100vh',
         display: 'flex',
+        flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
         padding: '32px 20px',
-        backgroundColor: 'var(--color-background)'
+        backgroundColor: 'var(--color-background)',
+        position: 'relative'
       }}
     >
+      {/* Quick Navigation Back to Admin */}
+      <div style={{ maxWidth: '540px', width: '100%', marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <a
+          href="#/admin"
+          className="btn btn-ghost btn-sm"
+          style={{ paddingLeft: '4px', fontSize: '13px', color: 'var(--color-secondary)' }}
+          title="Return to Admin Sessions Dashboard"
+        >
+          <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>arrow_back</span>
+          <span>Back to Admin Console</span>
+        </a>
+      </div>
+
       <div className="card" style={{ maxWidth: '540px', width: '100%', padding: '36px 32px' }}>
         {/* Header / Session Info */}
         <div style={{ textAlign: 'center', marginBottom: '28px' }}>
@@ -117,7 +144,7 @@ export default function ParticipantGate({ session, onGatePassed }) {
             </span>
             <span className="chip chip-neutral">
               <span className="material-symbols-outlined" style={{ fontSize: '14px', marginRight: '4px' }}>timer</span>
-              {session.slotDuration || 15} min interviews
+              {session.slotDuration || 15} min slots
             </span>
           </div>
 
@@ -126,7 +153,7 @@ export default function ParticipantGate({ session, onGatePassed }) {
           </h1>
 
           <p className="body-sm" style={{ color: 'var(--color-secondary)' }}>
-            Welcome to the interview self-scheduling portal. Please confirm your details below to view and select your preferred interview time slot.
+            Welcome to the self-scheduling portal. Please confirm your details below to view and select your preferred time slot.
           </p>
         </div>
 
@@ -213,9 +240,11 @@ export default function ParticipantGate({ session, onGatePassed }) {
               disabled={isSubmitting}
               style={{ backgroundColor: 'var(--color-surface)' }}
             >
-              <option value="A">Category A</option>
-              <option value="B">Category B</option>
-              <option value="C">Category C</option>
+              {sessionCategories.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat.startsWith('Category') ? cat : `Category ${cat}`}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -250,7 +279,7 @@ export default function ParticipantGate({ session, onGatePassed }) {
               disabled={isSubmitting}
             />
             <span style={{ fontSize: '11px', color: 'var(--color-secondary)', display: 'block', marginTop: '4px' }}>
-              Your email and phone will be used to record attendance and send your interview confirmation.
+              Your email and phone will be used to record attendance and send your booking confirmation.
             </span>
           </div>
 
@@ -284,6 +313,25 @@ export default function ParticipantGate({ session, onGatePassed }) {
             <span>{isSubmitting ? 'Recording Check-in...' : 'Check In & View Slots'}</span>
             <span className="material-symbols-outlined">arrow_forward</span>
           </button>
+
+          {/* Quick Invisible Tester Fill Shortcut */}
+          <div style={{ marginTop: '16px', textAlign: 'center' }}>
+            <button
+              type="button"
+              onClick={handleFillTester}
+              style={{
+                fontSize: '11px',
+                color: 'var(--color-secondary)',
+                textDecoration: 'underline',
+                cursor: 'pointer',
+                background: 'none',
+                border: 'none',
+                opacity: 0.75
+              }}
+            >
+              🧪 Quick-Fill as Invisible Admin Tester
+            </button>
+          </div>
         </form>
       </div>
     </div>

@@ -6,6 +6,7 @@ import {
   toggleSlotBlocked,
   updateSessionMeetingLink,
   updateSessionDescription,
+  updateSessionCategories,
   subscribeToSync
 } from '../../services/storage';
 import { formatDateDisplay } from '../../services/timeUtils';
@@ -15,6 +16,10 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
   const [session, setSession] = useState(null);
   const [attendees, setAttendees] = useState([]);
   const [activeTab, setActiveTab] = useState('slots'); // 'slots' | 'attendees'
+  const [selectedCategoryTab, setSelectedCategoryTab] = useState('all'); // 'all' | category name
+  const [isManagingCategories, setIsManagingCategories] = useState(false);
+  const [categoryEditList, setCategoryEditList] = useState([]);
+  const [newCatInput, setNewCatInput] = useState('');
   const [filterPeriod, setFilterPeriod] = useState('all'); // all | available | booked | blocked | morning | afternoon | evening
   const [layoutMode, setLayoutMode] = useState('stream'); // 'stream' | 'grid'
   const [slotToCancel, setSlotToCancel] = useState(null);
@@ -64,6 +69,24 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     }
   };
 
+  const handleLaunchTester = () => {
+    if (!session) return;
+    const testerProfile = {
+      name: 'Admin QA Tester',
+      category: session.categories?.[0] || 'Category A',
+      email: 'tester@viewme.internal',
+      phone: '+1 555-000-TEST',
+      contact: 'tester@viewme.internal • +1 555-000-TEST',
+      editCount: 0,
+      isTester: true,
+      id: `att_tester_${session.id}`
+    };
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`viewme_participant_${session.id}`, JSON.stringify(testerProfile));
+      window.location.hash = `#/session/${session.id}`;
+    }
+  };
+
   const handleSaveMeetingLink = (e) => {
     e.preventDefault();
     const res = updateSessionMeetingLink(sessionId, meetingLinkInput);
@@ -85,6 +108,47 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
       loadData();
     } else {
       onShowToast(res.error || 'Failed to update instructions.', 'error');
+    }
+  };
+
+  const handleOpenManageCategories = () => {
+    setCategoryEditList(session?.categories || ['Category A', 'Category B', 'Category C']);
+    setNewCatInput('');
+    setIsManagingCategories(true);
+  };
+
+  const handleAddCategoryToEditList = (e) => {
+    if (e) e.preventDefault();
+    const clean = newCatInput.trim();
+    if (!clean) return;
+    if (categoryEditList.some((c) => c.toLowerCase() === clean.toLowerCase())) {
+      onShowToast(`Category "${clean}" already exists.`, 'error');
+      return;
+    }
+    setCategoryEditList([...categoryEditList, clean]);
+    setNewCatInput('');
+  };
+
+  const handleRemoveCategoryFromEditList = (catToRemove) => {
+    if (categoryEditList.length <= 1) {
+      onShowToast('A session must have at least 1 category.', 'error');
+      return;
+    }
+    setCategoryEditList(categoryEditList.filter((c) => c !== catToRemove));
+  };
+
+  const handleSaveCategories = () => {
+    if (categoryEditList.length === 0) {
+      onShowToast('Please add at least 1 category.', 'error');
+      return;
+    }
+    const res = updateSessionCategories(sessionId, categoryEditList);
+    if (res.success) {
+      onShowToast(`Updated session categories (${categoryEditList.length} total)`);
+      setIsManagingCategories(false);
+      loadData();
+    } else {
+      onShowToast(res.error || 'Failed to update categories.', 'error');
     }
   };
 
@@ -141,14 +205,14 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     }
 
     if (!session.slots) return;
-    const headers = ['Session Title', 'Session Date', 'Slot Time', 'Status', 'Candidate Name', 'Category', 'Email', 'Phone', 'Contact Info', 'Booked At'];
-    const rows = session.slots.map((slot) => [
+    const headers = ['Session Title', 'Session Date', 'Slot Time', 'Category', 'Status', 'Candidate Name', 'Email', 'Phone', 'Contact Info', 'Booked At'];
+    const rows = (session.allSlots || session.slots).map((slot) => [
       `"${(session.title || '').replace(/"/g, '""')}"`,
       `"${session.date}"`,
       `"${slot.timeLabel}"`,
+      `"${slot.category || slot.booking?.candidateCategory || 'A'}"`,
       slot.isBooked ? '"Booked"' : slot.isBlocked ? '"Unavailable (Blocked)"' : '"Available"',
       slot.isBooked ? `"${(slot.booking.candidateName || '').replace(/"/g, '""')}"` : '""',
-      slot.isBooked ? `"${slot.booking.candidateCategory || 'A'}"` : '""',
       slot.isBooked ? `"${(slot.booking.candidateEmail || '').replace(/"/g, '""')}"` : '""',
       slot.isBooked ? `"${(slot.booking.candidatePhone || '').replace(/"/g, '""')}"` : '""',
       slot.isBooked ? `"${(slot.booking.candidateContact || '').replace(/"/g, '""')}"` : '""',
@@ -168,7 +232,11 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
 
   const filteredSlots = useMemo(() => {
     if (!session) return [];
-    return session.slots.filter((slot) => {
+    const sourceSlots = session.allSlots || session.slots || [];
+    return sourceSlots.filter((slot) => {
+      if (selectedCategoryTab !== 'all' && slot.category && slot.category !== selectedCategoryTab) {
+        return false;
+      }
       if (filterPeriod === 'available') return !slot.isBooked && !slot.isBlocked;
       if (filterPeriod === 'booked') return slot.isBooked;
       if (filterPeriod === 'blocked') return slot.isBlocked;
@@ -177,7 +245,7 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
       if (filterPeriod === 'evening') return slot.period === 'evening';
       return true;
     });
-  }, [session, filterPeriod]);
+  }, [session, filterPeriod, selectedCategoryTab]);
 
   // Grouped periods for smooth scroll and timeline sections
   const morningSlots = useMemo(() => {
@@ -453,7 +521,16 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
           <span>Back to All Sessions</span>
         </button>
 
-        <div style={{ display: 'flex', gap: '10px' }}>
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button
+            className="btn btn-secondary"
+            onClick={handleLaunchTester}
+            title="Open candidate schedule in invisible tester mode"
+            style={{ borderColor: '#3b82f6', color: '#1d4ed8', backgroundColor: 'rgba(59, 130, 246, 0.08)' }}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#3b82f6' }}>science</span>
+            <span>Test Flow (Tester Mode)</span>
+          </button>
           <button className="btn btn-secondary" onClick={exportCSV}>
             <span className="material-symbols-outlined">download</span>
             <span>Export CSV</span>
@@ -865,6 +942,81 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
       ) : (
         /* Slots Management Grid & Time Stream */
         <div>
+          {/* Category Tabs / Tracks Filter */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '12px',
+              backgroundColor: 'var(--color-surface-container)',
+              padding: '12px 18px',
+              borderRadius: 'var(--radius-lg)',
+              marginBottom: '20px',
+              border: '1px solid var(--color-outline-variant)'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '12px', fontWeight: '700', color: 'var(--color-secondary)', textTransform: 'uppercase', marginRight: '4px' }}>
+                Category Tracks:
+              </span>
+
+              <button
+                type="button"
+                className={`chip ${selectedCategoryTab === 'all' ? 'chip-primary' : 'chip-neutral'}`}
+                onClick={() => setSelectedCategoryTab('all')}
+                style={{
+                  cursor: 'pointer',
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  backgroundColor: selectedCategoryTab === 'all' ? 'var(--color-primary)' : 'var(--color-surface)',
+                  color: selectedCategoryTab === 'all' ? '#ffffff' : 'var(--color-primary)',
+                  border: '1px solid var(--color-outline-variant)'
+                }}
+              >
+                All Categories ({session.totalSlots || session.slots.length} seats)
+              </button>
+
+              {(session.categories || ['Category A', 'Category B', 'Category C']).map((cat) => {
+                const catSlots = session.categorySlots?.[cat] || [];
+                const catBooked = catSlots.filter((s) => s.isBooked).length;
+                const isSelected = selectedCategoryTab === cat;
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    className={`chip ${isSelected ? 'chip-primary' : 'chip-neutral'}`}
+                    onClick={() => setSelectedCategoryTab(cat)}
+                    style={{
+                      cursor: 'pointer',
+                      padding: '6px 12px',
+                      fontSize: '12px',
+                      backgroundColor: isSelected ? 'var(--color-primary)' : 'var(--color-surface)',
+                      color: isSelected ? '#ffffff' : 'var(--color-primary)',
+                      border: '1px solid var(--color-outline-variant)'
+                    }}
+                  >
+                    <span>{cat}</span>
+                    <span style={{ opacity: 0.85, fontSize: '11px', marginLeft: '4px' }}>
+                      ({catBooked}/{catSlots.length || 0})
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={handleOpenManageCategories}
+              style={{ fontSize: '12px', padding: '6px 12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>category</span>
+              <span>Manage / + Add Category</span>
+            </button>
+          </div>
+
           {/* Header Controls with View Switcher */}
           <div
             style={{
@@ -878,10 +1030,12 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
           >
             <div>
               <h3 className="headline-md" style={{ color: 'var(--color-primary)' }}>
-                Session Time Slots
+                Session Time Slots {selectedCategoryTab !== 'all' ? `— ${selectedCategoryTab}` : ''}
               </h3>
               <p className="body-sm" style={{ color: 'var(--color-secondary)' }}>
-                Manage candidate bookings, block times, or view schedule progression.
+                {selectedCategoryTab !== 'all'
+                  ? `Showing 9:00 AM – 4:00 PM schedule for ${selectedCategoryTab} (${session.categorySlots?.[selectedCategoryTab]?.length || 0} seats).`
+                  : `Manage all candidate tracks across ${session.categories?.length || 3} categories (${session.totalSlots || session.slots.length} total seats).`}
               </p>
             </div>
 
@@ -1108,6 +1262,109 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
         onConfirm={handleConfirmCancelSlot}
         onCancel={() => setSlotToCancel(null)}
       />
+
+      {/* Manage / Add Categories Modal */}
+      {isManagingCategories && (
+        <div className="modal-overlay" onClick={() => setIsManagingCategories(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '480px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', fontSize: '24px' }}>category</span>
+                <h3 className="headline-md" style={{ color: 'var(--color-primary)' }}>
+                  Manage Session Categories
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsManagingCategories(false)}
+                style={{ color: 'var(--color-secondary)' }}
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <p className="body-sm" style={{ color: 'var(--color-secondary)', marginBottom: '16px' }}>
+              Each category has its own independent full-day schedule seats ({session.startTime} – {session.endTime}). Add or remove categories below:
+            </p>
+
+            {/* Current Categories List */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '16px' }}>
+              {categoryEditList.map((cat) => (
+                <span
+                  key={cat}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    backgroundColor: 'var(--color-secondary-container)',
+                    color: 'var(--color-primary)',
+                    padding: '6px 12px',
+                    borderRadius: 'var(--radius-full)',
+                    fontSize: '13px',
+                    fontWeight: '700'
+                  }}
+                >
+                  <span>{cat}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveCategoryFromEditList(cat)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--color-secondary)',
+                      padding: '0 2px'
+                    }}
+                    title="Remove category"
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '15px' }}>close</span>
+                  </button>
+                </span>
+              ))}
+            </div>
+
+            {/* Add Category Form */}
+            <form onSubmit={handleAddCategoryToEditList} style={{ display: 'flex', gap: '8px', marginBottom: '24px' }}>
+              <input
+                type="text"
+                className="input-field"
+                placeholder="e.g. Category D or Finance Track"
+                value={newCatInput}
+                onChange={(e) => setNewCatInput(e.target.value)}
+                style={{ fontSize: '13px', flex: 1 }}
+              />
+              <button
+                type="submit"
+                className="btn btn-secondary btn-sm"
+                style={{ whiteSpace: 'nowrap', padding: '0 14px' }}
+              >
+                + Add Track
+              </button>
+            </form>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setIsManagingCategories(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleSaveCategories}
+                disabled={categoryEditList.length === 0}
+              >
+                Save Categories
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
