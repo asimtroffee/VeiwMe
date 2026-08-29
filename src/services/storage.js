@@ -1,4 +1,10 @@
-import { generateTimeSlots, generateSessionId } from './timeUtils';
+import {
+  generateTimeSlots,
+  generateSessionId,
+  isSlotWithinCutoff,
+  getHoursUntilSlot,
+  formatTimeUntilMeeting
+} from './timeUtils';
 import { db, isFirebaseConfigured } from './firebase';
 import {
   collection,
@@ -742,6 +748,7 @@ export function recordSessionAttendee(sessionId, { name, category = 'A', email =
     phone: phone.trim(),
     contact: derivedContact.trim(),
     editCount: existing?.editCount !== undefined ? existing.editCount : 0,
+    slotChangeCount: existing?.slotChangeCount !== undefined ? existing.slotChangeCount : 0,
     device: clientMeta.device,
     clientTimezone: clientMeta.timezone,
     firstCheckedInAt: existing ? existing.firstCheckedInAt : now,
@@ -759,7 +766,8 @@ export function recordSessionAttendee(sessionId, { name, category = 'A', email =
     email: attendeeRecord.email,
     phone: attendeeRecord.phone,
     contact: attendeeRecord.contact,
-    editCount: attendeeRecord.editCount
+    editCount: attendeeRecord.editCount,
+    slotChangeCount: attendeeRecord.slotChangeCount
   });
 
   // Firestore sync
@@ -839,6 +847,79 @@ export function getAllAttendees() {
 }
 
 // -------------------------------------------------------------
+// Slot Change & 3-Hour Cutoff Verification
+// -------------------------------------------------------------
+
+export function checkSlotChangeEligibility(sessionId, slotId, participantProfile) {
+  const sessions = getRawSessions();
+  const session = sessions.find((s) => s.id === sessionId);
+  const attendees = getRawAttendees();
+
+  const normalizedEmail = (participantProfile?.email || '').toLowerCase();
+  const normalizedContact = (participantProfile?.contact || '').toLowerCase();
+  const normalizedName = (participantProfile?.name || '').toLowerCase();
+
+  const attKey = `${sessionId}_${normalizedEmail || normalizedContact || normalizedName}`;
+  const attendee = attendees[attKey];
+
+  const changeCount = attendee?.slotChangeCount !== undefined
+    ? attendee.slotChangeCount
+    : (participantProfile?.slotChangeCount !== undefined ? participantProfile.slotChangeCount : 0);
+
+  // Rule 1: Maximum 1 Slot Change per session
+  if (changeCount >= 1) {
+    return {
+      canChange: false,
+      reason: 'max_changes_reached',
+      message: 'You have already changed your interview slot once. Each candidate is permitted to change their booking only once.',
+      changeCount,
+      remainingChanges: 0
+    };
+  }
+
+  // Rule 2: Minimum 3 Hours Before Meeting Start Time
+  if (session && slotId) {
+    const isWithin3Hours = isSlotWithinCutoff(session.date, slotId, 3);
+    const hoursRemaining = getHoursUntilSlot(session.date, slotId);
+
+    if (isWithin3Hours) {
+      if (hoursRemaining <= 0) {
+        return {
+          canChange: false,
+          reason: 'meeting_started',
+          message: 'This interview meeting time has already started or passed. Bookings cannot be modified after the scheduled start time.',
+          changeCount,
+          remainingChanges: 1,
+          hoursRemaining
+        };
+      }
+
+      const totalMins = Math.max(1, Math.round(hoursRemaining * 60));
+      const h = Math.floor(totalMins / 60);
+      const m = totalMins % 60;
+      const timeLeftStr = h > 0 ? `${h}h ${m > 0 ? `${m}m` : ''}` : `${m} min`;
+
+      return {
+        canChange: false,
+        reason: 'within_cutoff',
+        message: `Slot changes and cancellations must be made at least 3 hours before your scheduled interview time. There is only ${timeLeftStr} remaining until this interview.`,
+        changeCount,
+        remainingChanges: 1,
+        hoursRemaining
+      };
+    }
+  }
+
+  return {
+    canChange: true,
+    reason: 'eligible',
+    message: 'You are eligible to change your slot once (must be completed at least 3 hours before the interview).',
+    changeCount,
+    remainingChanges: 1
+  };
+}
+
+// -------------------------------------------------------------
 // Slot Booking (Atomic, 1 Slot Limit, Conflict Shield)
 // -------------------------------------------------------------
 
@@ -889,7 +970,7 @@ export function bookSlot(sessionId, slotId, { candidateName, candidateContact, c
         return {
           success: false,
           alreadyReserved: true,
-          error: `You already have an active reserved interview slot in this session. Each candidate may only book one slot. Please cancel your existing booking first if you wish to choose a different time.`
+          error: `You already have an active reserved interview slot in this session. Each candidate may only book one slot. Please use Change Slot if you wish to choose a different time.`
         };
       }
     }
@@ -943,7 +1024,129 @@ export function bookSlot(sessionId, slotId, { candidateName, candidateContact, c
   };
 }
 
-export function cancelBooking(sessionId, slotId) {
+// -------------------------------------------------------------
+// Reschedule / Change Slot (Enforces 1-Time Limit & 3-Hour Cutoff)
+// -------------------------------------------------------------
+
+export function rescheduleBooking(sessionId, oldSlotId, newSlotId, candidateProfile) {
+  // Check eligibility on old slot
+  const eligibility = checkSlotChangeEligibility(sessionId, oldSlotId, candidateProfile);
+  if (!eligibility.canChange) {
+    return {
+      success: false,
+      error: eligibility.message,
+      reason: eligibility.reason
+    };
+  }
+
+  const bookings = getRawBookings();
+  const blockedSlots = getRawBlockedSlots();
+  const sessions = getRawSessions();
+  const session = sessions.find((s) => s.id === sessionId);
+  const newKey = `${sessionId}_${newSlotId}`;
+  const oldKey = `${sessionId}_${oldSlotId}`;
+
+  // Check if new slot is blocked or already taken
+  if (blockedSlots[newKey]) {
+    return {
+      success: false,
+      error: 'The selected new time slot has been marked unavailable by the session administrator.'
+    };
+  }
+
+  if (bookings[newKey]) {
+    return {
+      success: false,
+      error: `The slot was just taken by another candidate (${bookings[newKey].candidateName}). Please pick another available time.`
+    };
+  }
+
+  const oldBooking = bookings[oldKey];
+  const candidateName = candidateProfile.name || oldBooking?.candidateName || '';
+  const candidateEmail = candidateProfile.email || oldBooking?.candidateEmail || '';
+  const candidatePhone = candidateProfile.phone || oldBooking?.candidatePhone || '';
+  const candidateContact = candidateProfile.contact || oldBooking?.candidateContact || '';
+  const candidateCategory = candidateProfile.category || oldBooking?.candidateCategory || 'A';
+
+  // Release old booking
+  delete bookings[oldKey];
+
+  // Set new booking
+  const newBookingRecord = {
+    sessionId,
+    slotId: newSlotId,
+    candidateName: candidateName.trim(),
+    candidateContact: candidateContact.trim(),
+    candidateCategory: candidateCategory || 'A',
+    candidateEmail: candidateEmail.trim(),
+    candidatePhone: candidatePhone.trim(),
+    bookedAt: new Date().toISOString(),
+    rescheduledFrom: oldSlotId,
+    rescheduledAt: new Date().toISOString()
+  };
+
+  bookings[newKey] = newBookingRecord;
+  saveRawBookings(bookings);
+
+  // Increment slotChangeCount for attendee (1 of 1 used)
+  const attendees = getRawAttendees();
+  const attKey = `${sessionId}_${(candidateEmail || candidateContact || candidateName).toLowerCase().trim()}`;
+  const nextSlotChangeCount = (eligibility.changeCount || 0) + 1;
+
+  if (attendees[attKey]) {
+    attendees[attKey].status = 'booked';
+    attendees[attKey].bookedSlotId = newSlotId;
+    attendees[attKey].slotChangeCount = nextSlotChangeCount;
+    attendees[attKey].lastSeenAt = new Date().toISOString();
+    saveRawAttendees(attendees);
+  }
+
+  const updatedProfile = {
+    ...candidateProfile,
+    slotChangeCount: nextSlotChangeCount
+  };
+  saveParticipantProfile(sessionId, updatedProfile);
+
+  // Firestore sync
+  if (isFirebaseConfigured() && db) {
+    deleteDoc(doc(db, 'bookings', oldKey)).catch(() => {});
+    setDoc(doc(db, 'bookings', newKey), newBookingRecord).catch(() => {});
+    if (attendees[attKey]) {
+      setDoc(doc(db, 'attendees', attKey), attendees[attKey], { merge: true }).catch(() => {});
+    }
+  }
+
+  logActivityEvent({
+    type: 'SLOT_RESCHEDULED',
+    sessionId,
+    sessionTitle: session?.title || 'Session',
+    actor: candidateName.trim(),
+    details: `Rescheduled interview slot from ${oldSlotId} to ${newSlotId} [Slot Change 1/1 Used]`
+  });
+
+  broadcast('SLOT_BOOKED', { sessionId, slotId: newSlotId, booking: newBookingRecord });
+  broadcast('SLOT_CANCELLED', { sessionId, slotId: oldSlotId });
+  broadcast('PARTICIPANT_UPDATED', { sessionId, profile: updatedProfile });
+
+  return {
+    success: true,
+    booking: newBookingRecord,
+    updatedProfile
+  };
+}
+
+export function cancelBooking(sessionId, slotId, candidateProfile = null, isCandidateAction = false) {
+  if (isCandidateAction && candidateProfile) {
+    const eligibility = checkSlotChangeEligibility(sessionId, slotId, candidateProfile);
+    if (!eligibility.canChange) {
+      return {
+        success: false,
+        error: eligibility.message,
+        reason: eligibility.reason
+      };
+    }
+  }
+
   const bookings = getRawBookings();
   const sessions = getRawSessions();
   const session = sessions.find((s) => s.id === sessionId);
@@ -961,10 +1164,22 @@ export function cancelBooking(sessionId, slotId) {
   const attendees = getRawAttendees();
   const normalizedContact = (removedBooking.candidateEmail || removedBooking.candidateContact || '').toLowerCase();
   const attKey = `${sessionId}_${normalizedContact}`;
+  
   if (attendees[attKey]) {
     attendees[attKey].status = 'checked_in';
     attendees[attKey].bookedSlotId = null;
+    if (isCandidateAction) {
+      attendees[attKey].slotChangeCount = (attendees[attKey].slotChangeCount || 0) + 1;
+    }
     saveRawAttendees(attendees);
+
+    if (candidateProfile) {
+      const updatedProf = {
+        ...candidateProfile,
+        slotChangeCount: attendees[attKey].slotChangeCount
+      };
+      saveParticipantProfile(sessionId, updatedProf);
+    }
   }
 
   // Firestore sync
@@ -972,6 +1187,9 @@ export function cancelBooking(sessionId, slotId) {
     deleteDoc(doc(db, 'bookings', key)).catch((err) => {
       console.warn('Could not delete booking from Firestore:', err);
     });
+    if (attendees[attKey]) {
+      setDoc(doc(db, 'attendees', attKey), attendees[attKey], { merge: true }).catch(() => {});
+    }
   }
 
   logActivityEvent({
@@ -979,7 +1197,7 @@ export function cancelBooking(sessionId, slotId) {
     sessionId: sessionId,
     sessionTitle: session?.title || 'Session',
     actor: removedBooking.candidateName,
-    details: `Cancelled booking (${removedBooking.candidateContact})`
+    details: `Cancelled booking (${removedBooking.candidateContact})${isCandidateAction ? ' [Slot Change 1/1 Used]' : ''}`
   });
 
   broadcast('SLOT_CANCELLED', { sessionId, slotId, removedBooking });
@@ -1075,13 +1293,16 @@ export function updateParticipantProfile(sessionId, oldProfile, newProfile) {
   const oldEmail = oldProfile?.email ? oldProfile.email.trim() : '';
   const oldContact = oldProfile?.contact ? oldProfile.contact.trim() : '';
 
+  const slotChangeCount = existingAtt?.slotChangeCount !== undefined ? existingAtt.slotChangeCount : (oldProfile?.slotChangeCount || 0);
+
   const profileRecord = {
     name: newName,
     category: newCategory,
     email: newEmail,
     phone: newPhone,
     contact: newContact,
-    editCount: nextEditCount
+    editCount: nextEditCount,
+    slotChangeCount: slotChangeCount
   };
 
   // Update localStorage profile
@@ -1106,6 +1327,7 @@ export function updateParticipantProfile(sessionId, oldProfile, newProfile) {
       phone: newPhone,
       contact: newContact,
       editCount: nextEditCount,
+      slotChangeCount: existingAtt.slotChangeCount !== undefined ? existingAtt.slotChangeCount : slotChangeCount,
       lastSeenAt: new Date().toISOString()
     };
     saveRawAttendees(attendees);

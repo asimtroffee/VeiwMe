@@ -111,3 +111,77 @@ export function generateSessionId() {
   }
   return id;
 }
+
+/**
+ * Extract start minutes from slot object or slot ID (e.g. "slot_540_555" -> 540)
+ */
+export function extractSlotStartMinutes(slot) {
+  if (!slot) return 0;
+  if (typeof slot === 'object') {
+    if (typeof slot.startMinutes === 'number') return slot.startMinutes;
+    if (slot.id && typeof slot.id === 'string' && slot.id.startsWith('slot_')) {
+      const parts = slot.id.split('_');
+      if (parts.length >= 2 && !isNaN(Number(parts[1]))) {
+        return Number(parts[1]);
+      }
+    }
+    if (slot.startTime) return timeToMinutes(slot.startTime);
+  } else if (typeof slot === 'string') {
+    if (slot.startsWith('slot_')) {
+      const parts = slot.split('_');
+      if (parts.length >= 2 && !isNaN(Number(parts[1]))) {
+        return Number(parts[1]);
+      }
+    }
+    return timeToMinutes(slot);
+  }
+  return 0;
+}
+
+/**
+ * Construct exact Date object for a scheduled slot start
+ */
+export function getSlotStartDateTime(sessionDate, slot) {
+  if (!sessionDate) return null;
+  const [year, month, day] = sessionDate.split('-').map(Number);
+  if (!year || !month || !day) return null;
+
+  const startMins = extractSlotStartMinutes(slot);
+  const hours = Math.floor(startMins / 60);
+  const mins = startMins % 60;
+
+  return new Date(year, month - 1, day, hours, mins, 0, 0);
+}
+
+/**
+ * Calculate hours remaining until the scheduled slot start
+ */
+export function getHoursUntilSlot(sessionDate, slot) {
+  const slotDate = getSlotStartDateTime(sessionDate, slot);
+  if (!slotDate) return 0;
+  const diffMs = slotDate.getTime() - Date.now();
+  return diffMs / (1000 * 60 * 60);
+}
+
+/**
+ * Check if the meeting is within the 3-hour cutoff limit (or already started)
+ */
+export function isSlotWithinCutoff(sessionDate, slot, cutoffHours = 3) {
+  const hours = getHoursUntilSlot(sessionDate, slot);
+  return hours < cutoffHours;
+}
+
+/**
+ * Format remaining hours into friendly string like "4h 25m" or "25 min"
+ */
+export function formatTimeUntilMeeting(sessionDate, slot) {
+  const hours = getHoursUntilSlot(sessionDate, slot);
+  if (hours <= 0) return 'Meeting time has passed';
+  const totalMins = Math.round(hours * 60);
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  if (h > 0) {
+    return `${h}h ${m > 0 ? `${m}m` : ''} remaining`;
+  }
+  return `${m} minute${m === 1 ? '' : 's'} remaining`;
+}

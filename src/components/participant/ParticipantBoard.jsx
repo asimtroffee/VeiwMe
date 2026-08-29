@@ -1,6 +1,19 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { getSessionDetails, bookSlot, cancelBooking, updateParticipantProfile, subscribeToSync } from '../../services/storage';
-import { formatDateDisplay } from '../../services/timeUtils';
+import {
+  getSessionDetails,
+  bookSlot,
+  rescheduleBooking,
+  cancelBooking,
+  checkSlotChangeEligibility,
+  updateParticipantProfile,
+  subscribeToSync
+} from '../../services/storage';
+import {
+  formatDateDisplay,
+  formatTimeUntilMeeting,
+  getHoursUntilSlot,
+  isSlotWithinCutoff
+} from '../../services/timeUtils';
 import ConfirmModal from '../common/ConfirmModal';
 
 export default function ParticipantBoard({ session: initialSession, participantProfile, onUpdateProfile, onShowToast }) {
@@ -11,7 +24,9 @@ export default function ParticipantBoard({ session: initialSession, participantP
   const [bookingConflictError, setBookingConflictError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [slotToCancel, setSlotToCancel] = useState(null);
-  const [alreadyBookedWarning, setAlreadyBookedWarning] = useState(null);
+  const [slotToSwitch, setSlotToSwitch] = useState(null);
+  const [switchError, setSwitchError] = useState('');
+  const [ineligibilityModal, setIneligibilityModal] = useState(null);
 
   const scrollContainerRef = useRef(null);
 
@@ -66,6 +81,12 @@ export default function ParticipantBoard({ session: initialSession, participantP
     });
   }, [session, participantProfile]);
 
+  // Slot Change Eligibility evaluation for active booking
+  const slotChangeEligibility = useMemo(() => {
+    if (!myBooking || !session) return null;
+    return checkSlotChangeEligibility(session.id, myBooking.id, participantProfile);
+  }, [myBooking, session, participantProfile]);
+
   const filteredSlots = useMemo(() => {
     if (!session || !session.slots) return [];
     return session.slots.filter((slot) => {
@@ -111,9 +132,26 @@ export default function ParticipantBoard({ session: initialSession, participantP
 
   const handleOpenBookingModal = (slot) => {
     if (myBooking) {
-      setAlreadyBookedWarning(slot);
+      if (myBooking.id === slot.id) {
+        return;
+      }
+      // Check if eligible to change slot (1-change limit and 3-hour cutoff)
+      const eligibility = checkSlotChangeEligibility(session.id, myBooking.id, participantProfile);
+      if (!eligibility.canChange) {
+        setIneligibilityModal({
+          title: eligibility.reason === 'within_cutoff' || eligibility.reason === 'meeting_started'
+            ? 'Slot Change Window Closed'
+            : 'Slot Change Limit Reached',
+          message: eligibility.message
+        });
+        return;
+      }
+
+      setSwitchError('');
+      setSlotToSwitch(slot);
       return;
     }
+
     setBookingConflictError('');
     setSelectedSlotForBooking(slot);
   };
@@ -146,12 +184,36 @@ export default function ParticipantBoard({ session: initialSession, participantP
     }
   };
 
+  const handleConfirmSlotSwitch = () => {
+    if (!slotToSwitch || !myBooking || isSubmitting) return;
+
+    setIsSubmitting(true);
+    setSwitchError('');
+
+    const res = rescheduleBooking(session.id, myBooking.id, slotToSwitch.id, participantProfile);
+    setIsSubmitting(false);
+
+    if (res.success) {
+      if (onUpdateProfile && res.updatedProfile) {
+        onUpdateProfile(res.updatedProfile);
+      }
+      onShowToast(`Your interview time has been changed to ${slotToSwitch.timeLabel}! (1/1 slot change used)`);
+      setSlotToSwitch(null);
+      loadData();
+    } else {
+      setSwitchError(res.error || 'Failed to switch time slot.');
+      loadData();
+    }
+  };
+
   const handleConfirmCancelMyBooking = () => {
     if (!slotToCancel) return;
-    const res = cancelBooking(session.id, slotToCancel.id);
+    const res = cancelBooking(session.id, slotToCancel.id, participantProfile, true);
     if (res.success) {
       onShowToast('Your interview slot booking has been cancelled.');
       loadData();
+    } else {
+      onShowToast(res.error || 'Could not cancel booking.', 'error');
     }
     setSlotToCancel(null);
   };
@@ -619,7 +681,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
               padding: '20px 24px'
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
               <div
                 style={{
                   width: '48px',
@@ -629,7 +691,8 @@ export default function ParticipantBoard({ session: initialSession, participantP
                   color: '#ffffff',
                   display: 'flex',
                   alignItems: 'center',
-                  justifyContent: 'center'
+                  justifyContent: 'center',
+                  flexShrink: 0
                 }}
               >
                 <span className="material-symbols-outlined" style={{ fontSize: '28px' }}>
@@ -637,11 +700,20 @@ export default function ParticipantBoard({ session: initialSession, participantP
                 </span>
               </div>
               <div>
-                <div className="label-sm" style={{ color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span>YOUR INTERVIEW IS CONFIRMED (1 SLOT PER PERSON)</span>
+                <div className="label-sm" style={{ color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <span>YOUR INTERVIEW IS CONFIRMED</span>
                   <span className="chip chip-accent" style={{ fontSize: '10px', padding: '1px 6px' }}>
                     Category {myBooking.booking.candidateCategory || participantProfile.category || 'A'}
                   </span>
+                  {slotChangeEligibility?.canChange ? (
+                    <span className="chip chip-success" style={{ fontSize: '10px', padding: '1px 8px' }}>
+                      1 Slot Change Available
+                    </span>
+                  ) : (
+                    <span className="chip chip-neutral" style={{ fontSize: '10px', padding: '1px 8px', opacity: 0.85 }}>
+                      {slotChangeEligibility?.reason === 'max_changes_reached' ? 'Slot Locked (1/1 Change Used)' : 'Slot Locked (< 3h to Meeting)'}
+                    </span>
+                  )}
                 </div>
                 <h2 className="headline-md" style={{ color: 'var(--color-primary)', marginTop: '2px' }}>
                   {myBooking.timeLabel} • {formatDateDisplay(session.date)}
@@ -649,18 +721,45 @@ export default function ParticipantBoard({ session: initialSession, participantP
                 <p className="body-sm" style={{ color: 'var(--color-secondary)' }}>
                   Candidate: <strong>{myBooking.booking.candidateName}</strong> ({myBooking.booking.candidateEmail || myBooking.booking.candidateContact} {myBooking.booking.candidatePhone ? `• ${myBooking.booking.candidatePhone}` : ''})
                 </p>
+                <div style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)', marginTop: '4px' }}>
+                  {slotChangeEligibility?.canChange
+                    ? `ℹ️ You may change this booking once. Changes must be made at least 3 hours before start time (${formatTimeUntilMeeting(session.date, myBooking)}).`
+                    : `🔒 ${slotChangeEligibility?.message || 'Slot change is no longer available for this booking.'}`}
+                </div>
               </div>
             </div>
 
-            <button
-              className="btn btn-danger"
-              onClick={() => setSlotToCancel(myBooking)}
-            >
-              <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
-                cancel
-              </span>
-              <span>Cancel / Change My Slot</span>
-            </button>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              {slotChangeEligibility?.canChange ? (
+                <button
+                  className="btn btn-danger"
+                  onClick={() => setSlotToCancel(myBooking)}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                    cancel
+                  </span>
+                  <span>Cancel Slot</span>
+                </button>
+              ) : (
+                <button
+                  className="btn btn-secondary"
+                  style={{ opacity: 0.85 }}
+                  onClick={() => {
+                    setIneligibilityModal({
+                      title: slotChangeEligibility?.reason === 'within_cutoff' || slotChangeEligibility?.reason === 'meeting_started'
+                        ? 'Slot Change Window Closed'
+                        : 'Slot Change Limit Reached',
+                      message: slotChangeEligibility?.message || 'You cannot change this booking.'
+                    });
+                  }}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                    lock
+                  </span>
+                  <span>Slot Change Locked</span>
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -1045,15 +1144,15 @@ export default function ParticipantBoard({ session: initialSession, participantP
         </div>
       )}
 
-      {/* Warning Modal when attempting to book a second slot */}
-      {alreadyBookedWarning && (
-        <div className="modal-overlay" onClick={() => setAlreadyBookedWarning(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '460px' }}>
+      {/* Switch Slot Confirmation Modal */}
+      {slotToSwitch && (
+        <div className="modal-overlay" onClick={() => !isSubmitting && setSlotToSwitch(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '480px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
               <div
                 style={{
-                  width: '40px',
-                  height: '40px',
+                  width: '42px',
+                  height: '42px',
                   borderRadius: 'var(--radius-full)',
                   backgroundColor: 'var(--color-secondary-container)',
                   color: 'var(--color-primary)',
@@ -1063,39 +1162,169 @@ export default function ParticipantBoard({ session: initialSession, participantP
                   flexShrink: 0
                 }}
               >
-                <span className="material-symbols-outlined">info</span>
+                <span className="material-symbols-outlined">swap_horiz</span>
               </div>
               <div>
                 <h3 className="headline-md" style={{ color: 'var(--color-primary)' }}>
-                  1 Slot Limit Per Candidate
+                  Change Interview Time
                 </h3>
+                <span className="chip chip-accent" style={{ fontSize: '11px', marginTop: '4px' }}>
+                  1-Time Change Limit Policy
+                </span>
               </div>
             </div>
 
-            <p className="body-md" style={{ color: 'var(--color-on-surface-variant)', marginBottom: '16px' }}>
-              You already have a confirmed interview slot for <strong>{myBooking?.timeLabel}</strong>.
-            </p>
-            <p className="body-sm" style={{ color: 'var(--color-secondary)', marginBottom: '24px' }}>
-              Each candidate may only reserve one time slot per interview session. If you would like to switch to <strong>{alreadyBookedWarning.timeLabel}</strong>, please cancel your existing slot first.
-            </p>
+            <div
+              style={{
+                backgroundColor: 'var(--color-surface-container)',
+                border: '1px solid var(--color-outline-variant)',
+                borderRadius: 'var(--radius-md)',
+                padding: '16px',
+                marginBottom: '16px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px'
+              }}
+            >
+              <div>
+                <div className="label-sm" style={{ color: 'var(--color-secondary)' }}>Current Slot</div>
+                <div style={{ fontWeight: '700', color: 'var(--color-primary)', textDecoration: 'line-through' }}>
+                  {myBooking?.timeLabel}
+                </div>
+              </div>
+              <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)' }}>
+                arrow_forward
+              </span>
+              <div>
+                <div className="label-sm" style={{ color: 'var(--color-success)' }}>New Selected Slot</div>
+                <div style={{ fontWeight: '800', color: 'var(--color-success)' }}>
+                  {slotToSwitch.timeLabel}
+                </div>
+              </div>
+            </div>
+
+            <div
+              style={{
+                padding: '12px 14px',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: '#fff8e6',
+                border: '1px solid #f2c744',
+                color: '#7a5200',
+                fontSize: '12px',
+                lineHeight: 1.5,
+                marginBottom: '20px',
+                display: 'flex',
+                gap: '10px',
+                alignItems: 'flex-start'
+              }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#b58105', marginTop: '2px' }}>
+                warning
+              </span>
+              <div>
+                <strong>Important Policy:</strong> Each candidate may change their interview slot <strong>only once</strong>, and all changes must be made at least <strong>3 hours before</strong> the interview.
+                <br />
+                Confirming this switch will finalize your schedule (0 changes remaining).
+              </div>
+            </div>
+
+            {switchError && (
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius-md)',
+                  backgroundColor: 'var(--color-error-container)',
+                  color: 'var(--color-on-error-container)',
+                  fontSize: '13px',
+                  marginBottom: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>error</span>
+                <span>{switchError}</span>
+              </div>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
               <button
                 type="button"
                 className="btn btn-secondary"
-                onClick={() => setAlreadyBookedWarning(null)}
+                onClick={() => setSlotToSwitch(null)}
+                disabled={isSubmitting}
               >
-                Got It
+                Keep Current Booking
               </button>
               <button
                 type="button"
-                className="btn btn-danger"
-                onClick={() => {
-                  setAlreadyBookedWarning(null);
-                  setSlotToCancel(myBooking);
+                className="btn btn-primary"
+                onClick={handleConfirmSlotSwitch}
+                disabled={isSubmitting}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>check</span>
+                <span>{isSubmitting ? 'Changing Slot...' : `Switch to ${slotToSwitch.timeLabel}`}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ineligibility Reason Modal */}
+      {ineligibilityModal && (
+        <div className="modal-overlay" onClick={() => setIneligibilityModal(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '460px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+              <div
+                style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: 'var(--radius-full)',
+                  backgroundColor: 'var(--color-error-container)',
+                  color: 'var(--color-on-error-container)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0
                 }}
               >
-                Cancel My Existing Slot
+                <span className="material-symbols-outlined">lock</span>
+              </div>
+              <h3 className="headline-md" style={{ color: 'var(--color-primary)' }}>
+                {ineligibilityModal.title}
+              </h3>
+            </div>
+
+            <p className="body-md" style={{ color: 'var(--color-on-surface-variant)', marginBottom: '20px', lineHeight: 1.5 }}>
+              {ineligibilityModal.message}
+            </p>
+
+            <div
+              style={{
+                padding: '12px 14px',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: 'var(--color-surface-container)',
+                border: '1px solid var(--color-outline-variant)',
+                fontSize: '12px',
+                color: 'var(--color-secondary)',
+                marginBottom: '20px'
+              }}
+            >
+              <strong>Policy Guidelines:</strong>
+              <ul style={{ marginTop: '6px', paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <li>Maximum of 1 interview slot change per candidate.</li>
+                <li>Changes and cancellations must be made &gt; 3 hours before start time.</li>
+              </ul>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setIneligibilityModal(null)}
+              >
+                Understood
               </button>
             </div>
           </div>
@@ -1106,7 +1335,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
       <ConfirmModal
         isOpen={Boolean(slotToCancel)}
         title="Cancel Your Interview Booking?"
-        message={`Are you sure you want to cancel your ${slotToCancel?.timeLabel} interview slot? The slot will immediately become available for other participants.`}
+        message={`Are you sure you want to cancel your ${slotToCancel?.timeLabel} interview slot? Note that cancelling will count as your 1 permitted slot change. You will be able to book another open slot if available.`}
         confirmText="Yes, Cancel Booking"
         cancelText="Keep My Booking"
         isDanger={true}

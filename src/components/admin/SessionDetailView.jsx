@@ -578,14 +578,28 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
                       {att.name.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <div style={{ fontWeight: '700', fontSize: '15px', color: 'var(--color-primary)' }}>
-                        {att.name}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: '700', fontSize: '15px', color: 'var(--color-primary)' }}>
+                          {att.name}
+                        </span>
+                        <span className="chip chip-accent" style={{ fontSize: '10px', padding: '1px 6px' }}>
+                          Cat {att.category || 'A'}
+                        </span>
+                        {att.slotChangeCount > 0 ? (
+                          <span className="chip chip-neutral" style={{ fontSize: '10px', padding: '1px 6px' }} title="Candidate has used their 1 allowed slot change">
+                            Rescheduled (1/1)
+                          </span>
+                        ) : (
+                          <span className="chip chip-neutral" style={{ fontSize: '10px', padding: '1px 6px', opacity: 0.75 }}>
+                            0/1 Changes Used
+                          </span>
+                        )}
                       </div>
-                      <div style={{ fontSize: '13px', color: 'var(--color-secondary)' }}>
+                      <div style={{ fontSize: '13px', color: 'var(--color-secondary)', marginTop: '2px' }}>
                         {att.contact}
                       </div>
                       <div style={{ fontSize: '11px', color: 'var(--color-on-surface-variant)', marginTop: '2px' }}>
-                        Checked in at: {new Date(att.firstCheckedInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
+                        Checked in at: {new Date(att.firstCheckedInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })} • {att.device || 'Desktop'}
                       </div>
                     </div>
                   </div>
