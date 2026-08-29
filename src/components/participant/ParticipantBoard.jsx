@@ -746,6 +746,21 @@ export default function ParticipantBoard({ session: initialSession, participantP
             </div>
 
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+              {session.meetingLink && (
+                <a
+                  href={session.meetingLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-primary btn-sm"
+                  style={{ backgroundColor: '#2D8CFF', borderColor: '#2D8CFF', color: '#ffffff', fontWeight: '700', boxShadow: '0 2px 6px rgba(45, 140, 255, 0.35)' }}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                    videocam
+                  </span>
+                  <span>Join Zoom Call</span>
+                </a>
+              )}
+
               <button
                 type="button"
                 className="btn btn-secondary btn-sm"
@@ -869,14 +884,36 @@ export default function ParticipantBoard({ session: initialSession, participantP
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                    <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', marginTop: '2px', fontSize: '20px' }}>
+                    <span className="material-symbols-outlined" style={{ color: '#2D8CFF', marginTop: '2px', fontSize: '20px' }}>
                       videocam
                     </span>
                     <div>
                       <div style={{ fontWeight: '700', fontSize: '14px', color: 'var(--color-primary)' }}>
                         Video Meeting
                       </div>
-                      <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>Link sent upon booking</div>
+                      {session.meetingLink ? (
+                        <div style={{ marginTop: '3px' }}>
+                          <a
+                            href={session.meetingLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              color: '#1a73e8',
+                              fontSize: '12px',
+                              textDecoration: 'underline',
+                              fontWeight: '600',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            <span>Open Zoom Link</span>
+                            <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>open_in_new</span>
+                          </a>
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>Link sent upon booking</div>
+                      )}
                     </div>
                   </div>
                 </div>

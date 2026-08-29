@@ -255,17 +255,20 @@ export function generateGoogleCalendarUrl({ session, slot, candidateProfile, boo
   const category = candidateProfile?.category || booking?.candidateCategory || 'A';
   const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
 
+  const meetingUrl = session.meetingLink ? session.meetingLink.trim() : '';
+
   const descriptionLines = [
     `Interview Session: ${session.title}`,
     `Date: ${formatDateDisplay(session.date)}`,
     `Time: ${slot.timeLabel} (${session.timezone || 'Local Time'})`,
     `Candidate: ${candidateName} (Category ${category})`,
+    meetingUrl ? `\n🎥 Video Meeting Link: ${meetingUrl}` : '',
     session.description ? `\nInstructions:\n${session.description}` : '',
     `\nView & Manage Interview: ${currentUrl}`
   ].filter(Boolean);
 
   const description = descriptionLines.join('\n');
-  const location = 'Online Video Call (Link sent prior to meeting)';
+  const location = meetingUrl || 'Online Video Call (Link sent prior to meeting)';
 
   const params = new URLSearchParams({
     action: 'TEMPLATE',
@@ -317,6 +320,7 @@ export function downloadIcsFile({ session, slot, candidateProfile, booking }) {
   const category = candidateProfile?.category || booking?.candidateCategory || 'A';
   const title = `Interview: ${session.title || 'Scheduled Interview'}`;
   const uid = `viewme-${session.id}-${slot.id || 'slot'}-${Date.now()}@viewme.app`;
+  const meetingUrl = session.meetingLink ? session.meetingLink.trim() : '';
 
   const icsContent = [
     'BEGIN:VCALENDAR',
@@ -330,8 +334,8 @@ export function downloadIcsFile({ session, slot, candidateProfile, booking }) {
     `DTSTART:${startUtc}`,
     `DTEND:${endUtc}`,
     `SUMMARY:${title}`,
-    `DESCRIPTION:Interview Session with ${candidateName} (Category ${category}).\\nSession: ${session.title}\\nInstructions: ${session.description || 'Online meeting'}\\n${window.location.href}`,
-    'LOCATION:Online Video Meeting',
+    `DESCRIPTION:Interview Session with ${candidateName} (Category ${category}).\\nSession: ${session.title}${meetingUrl ? `\\nMeeting Link: ${meetingUrl}` : ''}\\nInstructions: ${session.description || 'Online meeting'}\\n${window.location.href}`,
+    `LOCATION:${meetingUrl || 'Online Video Meeting'}`,
     'STATUS:CONFIRMED',
     'END:VEVENT',
     'END:VCALENDAR'

@@ -17,6 +17,7 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
   const [slotDuration, setSlotDuration] = useState(15);
   const [timezone, setTimezone] = useState('EST');
   const [description, setDescription] = useState('');
+  const [meetingLink, setMeetingLink] = useState('');
   const [error, setError] = useState('');
 
   const previewSlots = useMemo(() => {
@@ -45,7 +46,8 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
       endTime,
       slotDuration: Number(slotDuration),
       timezone,
-      description
+      description,
+      meetingLink
     });
 
     onCreated(session);
@@ -192,6 +194,24 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
             </div>
           </div>
 
+          <div style={{ marginBottom: '16px' }}>
+            <label className="input-label" htmlFor="sess-zoom" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#2D8CFF' }}>videocam</span>
+              <span>Zoom / Video Meeting Link (Optional)</span>
+            </label>
+            <input
+              id="sess-zoom"
+              type="url"
+              className="input-field"
+              placeholder="e.g. https://zoom.us/j/123456789 or Google Meet / Teams link"
+              value={meetingLink}
+              onChange={(e) => setMeetingLink(e.target.value)}
+            />
+            <div style={{ fontSize: '11px', color: 'var(--color-secondary)', marginTop: '4px' }}>
+              Candidates will receive this link upon booking to join the interview.
+            </div>
+          </div>
+
           <div style={{ marginBottom: '20px' }}>
             <label className="input-label" htmlFor="sess-desc">
               Instructions or Notes for Candidates (Optional)
@@ -199,7 +219,7 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
             <textarea
               id="sess-desc"
               className="input-field"
-              rows={3}
+              rows={2}
               placeholder="e.g. Please be in a quiet room with video enabled. Have your portfolio ready."
               value={description}
               onChange={(e) => setDescription(e.target.value)}

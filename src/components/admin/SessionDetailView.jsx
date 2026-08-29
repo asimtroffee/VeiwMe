@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { getSessionDetails, getSessionAttendees, cancelBooking, toggleSlotBlocked, subscribeToSync } from '../../services/storage';
+import {
+  getSessionDetails,
+  getSessionAttendees,
+  cancelBooking,
+  toggleSlotBlocked,
+  updateSessionMeetingLink,
+  subscribeToSync
+} from '../../services/storage';
 import { formatDateDisplay } from '../../services/timeUtils';
 import ConfirmModal from '../common/ConfirmModal';
 
@@ -10,6 +17,8 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
   const [filterPeriod, setFilterPeriod] = useState('all'); // all | available | booked | blocked | morning | afternoon | evening
   const [layoutMode, setLayoutMode] = useState('stream'); // 'stream' | 'grid'
   const [slotToCancel, setSlotToCancel] = useState(null);
+  const [isEditingMeetingLink, setIsEditingMeetingLink] = useState(false);
+  const [meetingLinkInput, setMeetingLinkInput] = useState('');
 
   const scrollContainerRef = useRef(null);
 
@@ -49,6 +58,18 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     if (res.success) {
       onShowToast(res.isBlocked ? `Slot ${slot.timeLabel} marked unavailable.` : `Slot ${slot.timeLabel} is now open and available.`);
       loadData();
+    }
+  };
+
+  const handleSaveMeetingLink = (e) => {
+    e.preventDefault();
+    const res = updateSessionMeetingLink(sessionId, meetingLinkInput);
+    if (res.success) {
+      onShowToast(meetingLinkInput.trim() ? 'Zoom meeting link updated!' : 'Meeting link cleared.');
+      setIsEditingMeetingLink(false);
+      loadData();
+    } else {
+      onShowToast(res.error || 'Failed to update meeting link.', 'error');
     }
   };
 
@@ -456,6 +477,113 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
                 {session.description}
               </p>
             )}
+
+            {/* Video Meeting / Zoom Link Section */}
+            <div
+              style={{
+                marginTop: '16px',
+                padding: '12px 16px',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: 'var(--color-surface-container)',
+                border: '1px solid var(--color-outline-variant)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: '20px', color: '#2D8CFF' }}>
+                    videocam
+                  </span>
+                  <span style={{ fontWeight: '700', fontSize: '13px', color: 'var(--color-primary)' }}>
+                    Zoom / Video Meeting Link:
+                  </span>
+                </div>
+
+                {!isEditingMeetingLink && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setMeetingLinkInput(session.meetingLink || '');
+                      setIsEditingMeetingLink(true);
+                    }}
+                    style={{ fontSize: '12px', padding: '4px 8px' }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>edit</span>
+                    <span>{session.meetingLink ? 'Edit Link' : '+ Add Zoom Link'}</span>
+                  </button>
+                )}
+              </div>
+
+              {isEditingMeetingLink ? (
+                <form onSubmit={handleSaveMeetingLink} style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <input
+                    type="url"
+                    className="input-field"
+                    style={{ flex: 1, minWidth: '220px', padding: '8px 12px', fontSize: '13px' }}
+                    placeholder="e.g. https://zoom.us/j/123456789 or Google Meet"
+                    value={meetingLinkInput}
+                    onChange={(e) => setMeetingLinkInput(e.target.value)}
+                    autoFocus
+                  />
+                  <button type="submit" className="btn btn-primary btn-sm">
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setIsEditingMeetingLink(false)}
+                  >
+                    Cancel
+                  </button>
+                </form>
+              ) : session.meetingLink ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <a
+                    href={session.meetingLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      color: '#1a73e8',
+                      fontSize: '13px',
+                      textDecoration: 'underline',
+                      fontWeight: '600',
+                      wordBreak: 'break-all'
+                    }}
+                  >
+                    {session.meetingLink}
+                  </a>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      navigator.clipboard.writeText(session.meetingLink);
+                      onShowToast('Zoom link copied to clipboard!');
+                    }}
+                    style={{ padding: '4px 8px', fontSize: '11px' }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>content_copy</span>
+                    <span>Copy</span>
+                  </button>
+                  <a
+                    href={session.meetingLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-primary btn-sm"
+                    style={{ padding: '4px 10px', fontSize: '11px', backgroundColor: '#2D8CFF', borderColor: '#2D8CFF' }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>open_in_new</span>
+                    <span>Launch Call</span>
+                  </a>
+                </div>
+              ) : (
+                <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>
+                  No Zoom link provided yet. Candidates will see "Link sent upon booking". Click <strong>+ Add Zoom Link</strong> to set one.
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Booking Progress Indicator */}

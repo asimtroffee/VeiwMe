@@ -641,7 +641,7 @@ export function toggleSlotBlocked(sessionId, slotId, reason = 'Unavailable') {
   }
 }
 
-export function createNewSession({ title, date, startTime, endTime, slotDuration = 15, timezone = 'EST', description = '' }) {
+export function createNewSession({ title, date, startTime, endTime, slotDuration = 15, timezone = 'EST', description = '', meetingLink = '' }) {
   const sessions = getRawSessions();
   const id = generateSessionId();
 
@@ -654,6 +654,7 @@ export function createNewSession({ title, date, startTime, endTime, slotDuration
     slotDuration: Number(slotDuration) || 15,
     timezone,
     description: description.trim(),
+    meetingLink: (meetingLink || '').trim(),
     createdAt: new Date().toISOString()
   };
 
@@ -672,11 +673,43 @@ export function createNewSession({ title, date, startTime, endTime, slotDuration
     sessionId: newSession.id,
     sessionTitle: newSession.title,
     actor: 'Admin',
-    details: `Created session on ${date} (${startTime}–${endTime}, ${newSession.slotDuration}m slots)`
+    details: `Created session on ${date} (${startTime}–${endTime}, ${newSession.slotDuration}m slots)${newSession.meetingLink ? ` • Zoom link configured` : ''}`
   });
 
   broadcast('SESSION_CREATED', { session: newSession });
   return newSession;
+}
+
+export function updateSessionMeetingLink(sessionId, meetingLink) {
+  const sessions = getRawSessions();
+  const index = sessions.findIndex((s) => s.id === sessionId);
+  if (index === -1) return { success: false, error: 'Session not found.' };
+
+  const cleanLink = (meetingLink || '').trim();
+  sessions[index] = {
+    ...sessions[index],
+    meetingLink: cleanLink,
+    updatedAt: new Date().toISOString()
+  };
+
+  saveRawSessions(sessions);
+
+  if (isFirebaseConfigured() && db) {
+    setDoc(doc(db, 'sessions', sessionId), sessions[index], { merge: true }).catch((err) => {
+      console.warn('Could not sync updated session meeting link to Firestore:', err);
+    });
+  }
+
+  logActivityEvent({
+    type: 'SESSION_UPDATED',
+    sessionId,
+    sessionTitle: sessions[index].title,
+    actor: 'Admin',
+    details: cleanLink ? `Configured Zoom/video meeting link: ${cleanLink}` : 'Removed meeting link'
+  });
+
+  broadcast('SESSION_UPDATED', { sessionId, session: sessions[index] });
+  return { success: true, session: sessions[index] };
 }
 
 export function deleteSession(sessionId) {
