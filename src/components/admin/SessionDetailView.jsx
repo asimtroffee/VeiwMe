@@ -57,6 +57,8 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     if (res.success) {
       onShowToast(`Cancelled booking for ${slotToCancel.booking?.candidateName || 'slot'}`);
       loadData();
+    } else {
+      onShowToast(res.error || 'Failed to cancel booking.', 'error');
     }
     setSlotToCancel(null);
   };
@@ -1365,6 +1367,18 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
           </div>
         </div>
       )}
+
+      {/* Confirmation Modal for Admin Slot Cancellation */}
+      <ConfirmModal
+        isOpen={Boolean(slotToCancel)}
+        title="Cancel Candidate Booking"
+        message={`Are you sure you want to cancel the booking for ${slotToCancel?.booking?.candidateName || 'this candidate'} at ${slotToCancel?.timeLabel}? This will immediately open the slot for other candidates.`}
+        confirmText="Yes, Cancel Booking"
+        cancelText="Keep Booking"
+        isDanger={true}
+        onConfirm={handleConfirmCancelSlot}
+        onCancel={() => setSlotToCancel(null)}
+      />
     </div>
   );
 }

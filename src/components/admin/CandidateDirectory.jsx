@@ -23,12 +23,14 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
     return () => unsubscribe();
   }, []);
 
-  const handleConfirmCancel = () => {
+  const handleConfirmCancel = async () => {
     if (!candidateToCancel) return;
-    const res = cancelBooking(candidateToCancel.sessionId, candidateToCancel.slotId);
+    const res = await cancelBooking(candidateToCancel.sessionId, candidateToCancel.slotId);
     if (res.success) {
       onShowToast(`Cancelled booking for ${candidateToCancel.candidateName}`);
       loadData();
+    } else {
+      onShowToast(res.error || 'Failed to cancel booking.', 'error');
     }
     setCandidateToCancel(null);
   };

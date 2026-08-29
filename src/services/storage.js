@@ -1393,24 +1393,60 @@ export async function cancelBooking(sessionId, slotId, candidateProfile = null, 
   const bookings = getRawBookings();
   const sessions = getRawSessions();
   const session = sessions.find((s) => s.id === sessionId);
-  const key = `${sessionId}_${slotId}`;
+  
+  let key = `${sessionId}_${slotId}`;
+  let removedBooking = bookings[key];
 
-  if (!bookings[key]) {
+  // Resilient multi-category and legacy key matching
+  if (!removedBooking) {
+    const matchedKey = Object.keys(bookings).find((k) => {
+      if (!k.startsWith(`${sessionId}_`)) return false;
+      const b = bookings[k];
+      if (k === `${sessionId}_${slotId}`) return true;
+      if (k.endsWith(slotId)) return true;
+      if (slotId && k.includes(slotId)) return true;
+      if (b && b.slotId === slotId) return true;
+      return false;
+    });
+    if (matchedKey) {
+      key = matchedKey;
+      removedBooking = bookings[matchedKey];
+    }
+  }
+
+  if (!removedBooking) {
     return { success: false, error: 'Booking not found.' };
   }
 
-  const removedBooking = bookings[key];
   delete bookings[key];
   saveRawBookings(bookings);
 
   // Revert attendee status
   const attendees = getRawAttendees();
-  const normalizedContact = (removedBooking.candidateEmail || removedBooking.candidateContact || '').toLowerCase();
-  const attKey = `${sessionId}_${normalizedContact}`;
+  const rawEmail = (removedBooking.candidateEmail || '').trim().toLowerCase();
+  const rawContact = (removedBooking.candidateContact || '').trim().toLowerCase();
+  const rawName = (removedBooking.candidateName || '').trim().toLowerCase();
+
+  // Find attendee record across all possible key formats
+  let attKey = `${sessionId}_${rawEmail || rawContact || rawName}`;
+  if (!attendees[attKey]) {
+    const foundKey = Object.keys(attendees).find((k) => {
+      if (!k.startsWith(`${sessionId}_`)) return false;
+      const att = attendees[k];
+      if (rawEmail && att.email && att.email.toLowerCase() === rawEmail) return true;
+      if (rawContact && att.contact && att.contact.toLowerCase().includes(rawContact)) return true;
+      if (rawName && att.name && att.name.toLowerCase() === rawName) return true;
+      return false;
+    });
+    if (foundKey) {
+      attKey = foundKey;
+    }
+  }
   
   if (attendees[attKey]) {
     attendees[attKey].status = 'checked_in';
     attendees[attKey].bookedSlotId = null;
+    attendees[attKey].isBooked = false;
     if (isCandidateAction) {
       attendees[attKey].slotChangeCount = (attendees[attKey].slotChangeCount || 0) + 1;
     }
@@ -1446,6 +1482,7 @@ export async function cancelBooking(sessionId, slotId, candidateProfile = null, 
   });
 
   broadcast('SLOT_CANCELLED', { sessionId, slotId, removedBooking });
+  broadcast('SESSION_DATA_SYNC', { sessionId, type: 'CANCELLED' });
   return { success: true };
 }
 
@@ -1463,17 +1500,18 @@ export function getAllCandidates() {
   Object.keys(bookings).forEach((key) => {
     const booking = bookings[key];
     const [sessionId, ...slotParts] = key.split('_');
-    const slotId = slotParts.join('_');
+    const slotId = booking.slotId || slotParts.join('_');
     const session = sessionMap[sessionId];
 
     if (session) {
-      const slots = generateTimeSlots(session.startTime, session.endTime, session.slotDuration || 15);
-      const matchedSlot = slots.find((sl) => sl.id === slotId);
+      const category = booking.candidateCategory || 'A';
+      const slots = generateTimeSlots(session.startTime, session.endTime, session.slotDuration || 15, category);
+      const matchedSlot = slots.find((sl) => sl.id === slotId || sl.baseId === slotId || key.endsWith(sl.id));
 
       candidateList.push({
         id: key,
         candidateName: booking.candidateName,
-        candidateCategory: booking.candidateCategory || 'A',
+        candidateCategory: category,
         candidateEmail: booking.candidateEmail || '',
         candidatePhone: booking.candidatePhone || '',
         candidateContact: booking.candidateContact,
@@ -1481,7 +1519,7 @@ export function getAllCandidates() {
         sessionId: session.id,
         sessionTitle: session.title,
         sessionDate: session.date,
-        slotTimeLabel: matchedSlot ? matchedSlot.timeLabel : 'Scheduled Time',
+        slotTimeLabel: matchedSlot ? matchedSlot.timeLabel : (booking.slotTimeLabel || 'Scheduled Time'),
         slotId: slotId
       });
     }
