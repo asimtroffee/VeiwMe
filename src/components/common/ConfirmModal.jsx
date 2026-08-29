@@ -15,6 +15,7 @@ export default function ConfirmModal({
   return (
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-drag-handle" />
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
           <div
             style={{

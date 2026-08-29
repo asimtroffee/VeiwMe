@@ -590,8 +590,17 @@ a {
 }
 
 /* =============================================================
-   Mobile Phone Optimizations (Phone-First Scroll View)
+   Mobile Phone Optimizations (Phone-First Experience)
    ============================================================= */
+
+.modal-drag-handle {
+  display: none;
+  width: 40px;
+  height: 5px;
+  background-color: var(--color-outline);
+  border-radius: var(--radius-full);
+  margin: 0 auto 16px auto;
+}
 
 @media (max-width: 768px) {
   /* On mobile phones, hide the grid view toggle and strictly use the Time Stream Scroll layout */
@@ -600,19 +609,26 @@ a {
   }
 
   .time-stream-wrapper {
-    margin-top: 12px;
-    border-radius: var(--radius-lg);
+    margin-top: 8px;
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--color-outline-variant);
   }
 
   .time-stream-toolbar {
-    padding: 12px 14px;
-    gap: 10px;
+    padding: 10px 12px;
+    gap: 8px;
+    position: sticky;
+    top: 60px;
+    z-index: 20;
+    background-color: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--color-outline-variant);
   }
 
   .time-stream-scroll-viewport {
-    padding: 12px 14px;
-    max-height: 480px;
-    -webkit-overflow-scrolling: touch;
+    padding: 12px 10px;
+    max-height: none;
+    overflow-y: visible;
   }
 
   /* Single-column, thumb-friendly slot row layout for phone screens */
@@ -621,7 +637,12 @@ a {
     align-items: stretch;
     gap: 12px;
     padding: 14px 16px;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  }
+
+  .timeline-slot-row:active {
+    transform: scale(0.985);
   }
 
   .timeline-slot-row > div:first-child {
@@ -631,45 +652,78 @@ a {
   .timeline-slot-row .slot-book-action-btn,
   .timeline-slot-row button {
     width: 100%;
+    min-height: 44px;
     justify-content: center;
     padding: 10px 16px;
     font-size: 14px;
+    font-weight: 700;
     border-radius: var(--radius-md);
   }
 
   .time-period-header {
-    padding: 8px 10px;
+    position: sticky;
+    top: 110px;
+    z-index: 15;
+    padding: 8px 12px;
     font-size: 12px;
+    border-radius: var(--radius-md);
+    background-color: rgba(253, 248, 246, 0.96);
+    backdrop-filter: blur(10px);
   }
 
   .scroll-nav-group {
-    width: 100%;
-    justify-content: space-between;
-    padding-top: 6px;
-    border-top: 1px solid var(--color-outline-variant);
+    display: none;
   }
 
-  .scroll-btn {
-    width: 40px;
-    height: 38px;
-    border-radius: var(--radius-md);
-    flex: 1;
-  }
-
-  /* Bottom sheet modal styling on mobile */
+  /* Bottom sheet modal styling on mobile (matches Cal.com / Apple modal sheets) */
   .modal-overlay {
     align-items: flex-end;
     padding: 0;
+    backdrop-filter: blur(4px);
+    animation: fadeIn 0.2s ease-out;
+  }
+
+  .modal-drag-handle {
+    display: block;
   }
 
   .modal-content {
-    border-bottom-left-radius: 0;
-    border-bottom-right-radius: 0;
-    border-top-left-radius: var(--radius-2xl);
-    border-top-right-radius: var(--radius-2xl);
-    max-height: 90vh;
+    width: 100% !important;
+    max-width: 100% !important;
+    border-bottom-left-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+    border-top-left-radius: var(--radius-2xl) !important;
+    border-top-right-radius: var(--radius-2xl) !important;
+    max-height: 88vh;
     overflow-y: auto;
-    padding: 24px 20px 32px;
+    padding: 16px 20px 36px !important;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.15);
+    animation: slideUpBottom 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes slideUpBottom {
+    from {
+      transform: translateY(100%);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+
+  .app-container, main {
+    padding: 16px 14px !important;
+  }
+
+  .card {
+    padding: 18px 16px;
+  }
+
+  .headline-lg {
+    font-size: 22px;
+  }
+
+  .headline-md {
+    font-size: 18px;
   }
 }
 

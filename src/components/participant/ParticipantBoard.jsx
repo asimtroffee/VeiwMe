@@ -27,6 +27,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
   const [slotToSwitch, setSlotToSwitch] = useState(null);
   const [switchError, setSwitchError] = useState('');
   const [ineligibilityModal, setIneligibilityModal] = useState(null);
+  const [isMobileDetailsOpen, setIsMobileDetailsOpen] = useState(false);
 
   const scrollContainerRef = useRef(null);
 
@@ -765,63 +766,91 @@ export default function ParticipantBoard({ session: initialSession, participantP
 
         {/* Layout: Left Sidebar + Center Grid */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '28px', alignItems: 'flex-start' }}>
-          {/* Left Sidebar: Session Info */}
-          <aside style={{ width: '280px', flexShrink: 0 }}>
-            <div className="card" style={{ padding: '24px' }}>
-              <h2 className="headline-md" style={{ color: 'var(--color-primary)', marginBottom: '16px' }}>
-                Interview Details
-              </h2>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '20px' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                  <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', marginTop: '2px' }}>
+          {/* Left Sidebar / Mobile Collapsible Info */}
+          <aside className="session-info-sidebar" style={{ width: '100%', maxWidth: '280px', flexShrink: 0 }}>
+            <div className="card" style={{ padding: '20px' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  cursor: 'pointer',
+                  marginBottom: isMobileDetailsOpen ? '16px' : '0'
+                }}
+                onClick={() => setIsMobileDetailsOpen(!isMobileDetailsOpen)}
+                className="mobile-details-header"
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)' }}>
                     calendar_month
                   </span>
-                  <div>
-                    <div style={{ fontWeight: '600', fontSize: '14px', color: 'var(--color-primary)' }}>
-                      {formatDateDisplay(session.date)}
-                    </div>
-                    <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>Date of Session</div>
-                  </div>
+                  <h2 className="headline-md" style={{ color: 'var(--color-primary)', fontSize: '16px' }}>
+                    Interview Details
+                  </h2>
                 </div>
-
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                  <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', marginTop: '2px' }}>
-                    schedule
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span className="chip chip-accent" style={{ fontSize: '11px', padding: '2px 8px' }}>
+                    {duration}m • {session.timezone}
                   </span>
-                  <div>
-                    <div style={{ fontWeight: '600', fontSize: '14px', color: 'var(--color-primary)' }}>
-                      {duration} Minutes
-                    </div>
-                    <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>
-                      {session.startTime} – {session.endTime} ({session.timezone})
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                  <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', marginTop: '2px' }}>
-                    videocam
+                  <span className="material-symbols-outlined mobile-toggle-icon" style={{ fontSize: '20px', color: 'var(--color-secondary)' }}>
+                    {isMobileDetailsOpen ? 'expand_less' : 'expand_more'}
                   </span>
-                  <div>
-                    <div style={{ fontWeight: '600', fontSize: '14px', color: 'var(--color-primary)' }}>
-                      Video Meeting
-                    </div>
-                    <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>Link sent upon booking</div>
-                  </div>
                 </div>
               </div>
 
-              {session.description && (
-                <div style={{ borderTop: '1px solid var(--color-outline-variant)', paddingTop: '16px' }}>
-                  <div className="label-sm" style={{ color: 'var(--color-secondary)', marginBottom: '6px' }}>
-                    Instructions
+              {/* Collapsible content (expanded on desktop, toggled on mobile) */}
+              <div className={`session-details-content ${isMobileDetailsOpen ? 'open' : ''}`}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '16px', marginTop: '14px' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                    <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', marginTop: '2px', fontSize: '20px' }}>
+                      event
+                    </span>
+                    <div>
+                      <div style={{ fontWeight: '700', fontSize: '14px', color: 'var(--color-primary)' }}>
+                        {formatDateDisplay(session.date)}
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>Date of Session</div>
+                    </div>
                   </div>
-                  <p className="body-sm" style={{ color: 'var(--color-on-surface-variant)' }}>
-                    {session.description}
-                  </p>
+
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                    <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', marginTop: '2px', fontSize: '20px' }}>
+                      schedule
+                    </span>
+                    <div>
+                      <div style={{ fontWeight: '700', fontSize: '14px', color: 'var(--color-primary)' }}>
+                        {duration} Minutes
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>
+                        {session.startTime} – {session.endTime} ({session.timezone})
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                    <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', marginTop: '2px', fontSize: '20px' }}>
+                      videocam
+                    </span>
+                    <div>
+                      <div style={{ fontWeight: '700', fontSize: '14px', color: 'var(--color-primary)' }}>
+                        Video Meeting
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>Link sent upon booking</div>
+                    </div>
+                  </div>
                 </div>
-              )}
+
+                {session.description && (
+                  <div style={{ borderTop: '1px solid var(--color-outline-variant)', paddingTop: '14px' }}>
+                    <div className="label-sm" style={{ color: 'var(--color-secondary)', marginBottom: '4px' }}>
+                      Instructions
+                    </div>
+                    <p className="body-sm" style={{ color: 'var(--color-on-surface-variant)' }}>
+                      {session.description}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           </aside>
 
@@ -1054,6 +1083,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
       {selectedSlotForBooking && (
         <div className="modal-overlay" onClick={() => setSelectedSlotForBooking(null)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '460px' }}>
+            <div className="modal-drag-handle" />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
               <h3 className="headline-md" style={{ color: 'var(--color-primary)' }}>
                 Confirm Interview Booking
@@ -1347,6 +1377,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
       {isEditingInfo && (
         <div className="modal-overlay" onClick={() => !isSavingEdit && setIsEditingInfo(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '480px' }}>
+            <div className="modal-drag-handle" />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <div
