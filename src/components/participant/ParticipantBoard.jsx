@@ -28,6 +28,8 @@ export default function ParticipantBoard({ session: initialSession, participantP
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [slotToCancel, setSlotToCancel] = useState(null);
   const [slotToSwitch, setSlotToSwitch] = useState(null);
+  const [switchStep, setSwitchStep] = useState(1); // 1 = Review, 2 = Final Warning & Verification
+  const [hasAcceptedFinalWarning, setHasAcceptedFinalWarning] = useState(false);
   const [switchError, setSwitchError] = useState('');
   const [ineligibilityModal, setIneligibilityModal] = useState(null);
   const [isMobileDetailsOpen, setIsMobileDetailsOpen] = useState(false);
@@ -152,6 +154,8 @@ export default function ParticipantBoard({ session: initialSession, participantP
       }
 
       setSwitchError('');
+      setSwitchStep(1);
+      setHasAcceptedFinalWarning(false);
       setSlotToSwitch(slot);
       return;
     }
@@ -1252,129 +1256,258 @@ export default function ParticipantBoard({ session: initialSession, participantP
         </div>
       )}
 
-      {/* Switch Slot Confirmation Modal */}
+      {/* 2-Step Slot Switch Verification Modal */}
       {slotToSwitch && (
         <div className="modal-overlay" onClick={() => !isSubmitting && setSlotToSwitch(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '480px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '500px' }}>
+            <div className="modal-drag-handle" />
+
+            {/* Header & Step Indicator */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div
+                  style={{
+                    width: '42px',
+                    height: '42px',
+                    borderRadius: 'var(--radius-full)',
+                    backgroundColor: switchStep === 2 ? '#ffebee' : 'var(--color-secondary-container)',
+                    color: switchStep === 2 ? '#d32f2f' : 'var(--color-primary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
+                  }}
+                >
+                  <span className="material-symbols-outlined">
+                    {switchStep === 2 ? 'warning' : 'swap_horiz'}
+                  </span>
+                </div>
+                <div>
+                  <h3 className="headline-md" style={{ color: 'var(--color-primary)' }}>
+                    {switchStep === 1 ? 'Step 1 of 2: Review New Time' : 'Step 2 of 2: Final Confirmation & Lock'}
+                  </h3>
+                  <span className={`chip ${switchStep === 2 ? 'chip-neutral' : 'chip-accent'}`} style={{ fontSize: '11px', marginTop: '3px' }}>
+                    {switchStep === 1 ? '1-Time Slot Change Policy' : '⚠️ Permanent & Irreversible Action'}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => !isSubmitting && setSlotToSwitch(null)}
+                style={{ color: 'var(--color-secondary)', padding: '4px' }}
+                disabled={isSubmitting}
+              >
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            {/* Visual Step Progress Bar */}
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '18px' }}>
               <div
                 style={{
-                  width: '42px',
-                  height: '42px',
+                  flex: 1,
+                  height: '4px',
                   borderRadius: 'var(--radius-full)',
-                  backgroundColor: 'var(--color-secondary-container)',
-                  color: 'var(--color-primary)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0
+                  backgroundColor: 'var(--color-primary)',
+                  transition: 'all 0.3s ease'
                 }}
-              >
-                <span className="material-symbols-outlined">swap_horiz</span>
-              </div>
-              <div>
-                <h3 className="headline-md" style={{ color: 'var(--color-primary)' }}>
-                  Change Interview Time
-                </h3>
-                <span className="chip chip-accent" style={{ fontSize: '11px', marginTop: '4px' }}>
-                  1-Time Change Limit Policy
-                </span>
-              </div>
-            </div>
-
-            <div
-              style={{
-                backgroundColor: 'var(--color-surface-container)',
-                border: '1px solid var(--color-outline-variant)',
-                borderRadius: 'var(--radius-md)',
-                padding: '16px',
-                marginBottom: '16px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '12px'
-              }}
-            >
-              <div>
-                <div className="label-sm" style={{ color: 'var(--color-secondary)' }}>Current Slot</div>
-                <div style={{ fontWeight: '700', color: 'var(--color-primary)', textDecoration: 'line-through' }}>
-                  {myBooking?.timeLabel}
-                </div>
-              </div>
-              <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)' }}>
-                arrow_forward
-              </span>
-              <div>
-                <div className="label-sm" style={{ color: 'var(--color-success)' }}>New Selected Slot</div>
-                <div style={{ fontWeight: '800', color: 'var(--color-success)' }}>
-                  {slotToSwitch.timeLabel}
-                </div>
-              </div>
-            </div>
-
-            <div
-              style={{
-                padding: '12px 14px',
-                borderRadius: 'var(--radius-md)',
-                backgroundColor: '#fff8e6',
-                border: '1px solid #f2c744',
-                color: '#7a5200',
-                fontSize: '12px',
-                lineHeight: 1.5,
-                marginBottom: '20px',
-                display: 'flex',
-                gap: '10px',
-                alignItems: 'flex-start'
-              }}
-            >
-              <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#b58105', marginTop: '2px' }}>
-                warning
-              </span>
-              <div>
-                <strong>Important Policy:</strong> Each candidate may change their interview slot <strong>only once</strong>, and all changes must be made at least <strong>3 hours before</strong> the interview.
-                <br />
-                Confirming this switch will finalize your schedule (0 changes remaining).
-              </div>
-            </div>
-
-            {switchError && (
+              />
               <div
                 style={{
-                  padding: '10px 14px',
-                  borderRadius: 'var(--radius-md)',
-                  backgroundColor: 'var(--color-error-container)',
-                  color: 'var(--color-on-error-container)',
-                  fontSize: '13px',
-                  marginBottom: '16px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
+                  flex: 1,
+                  height: '4px',
+                  borderRadius: 'var(--radius-full)',
+                  backgroundColor: switchStep === 2 ? '#d32f2f' : 'var(--color-outline-variant)',
+                  transition: 'all 0.3s ease'
                 }}
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>error</span>
-                <span>{switchError}</span>
+              />
+            </div>
+
+            {/* STEP 1: TIME COMPARISON & SELECTION REVIEW */}
+            {switchStep === 1 && (
+              <div>
+                <p className="body-sm" style={{ color: 'var(--color-secondary)', marginBottom: '16px' }}>
+                  You are switching your interview time for <strong>{formatDateDisplay(session.date)}</strong>. Please review your new selected slot:
+                </p>
+
+                <div
+                  style={{
+                    backgroundColor: 'var(--color-surface-container)',
+                    border: '1px solid var(--color-outline-variant)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '16px',
+                    marginBottom: '16px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '12px'
+                  }}
+                >
+                  <div>
+                    <div className="label-sm" style={{ color: 'var(--color-secondary)' }}>Current Slot</div>
+                    <div style={{ fontWeight: '700', color: 'var(--color-primary)', textDecoration: 'line-through', fontSize: '15px' }}>
+                      {myBooking?.timeLabel}
+                    </div>
+                  </div>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', fontSize: '24px' }}>
+                    arrow_forward
+                  </span>
+                  <div>
+                    <div className="label-sm" style={{ color: 'var(--color-success)' }}>New Requested Slot</div>
+                    <div style={{ fontWeight: '800', color: 'var(--color-success)', fontSize: '16px' }}>
+                      {slotToSwitch.timeLabel}
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    borderRadius: 'var(--radius-md)',
+                    backgroundColor: '#fff8e6',
+                    border: '1px solid #f2c744',
+                    color: '#7a5200',
+                    fontSize: '12px',
+                    lineHeight: 1.5,
+                    marginBottom: '20px',
+                    display: 'flex',
+                    gap: '10px',
+                    alignItems: 'flex-start'
+                  }}
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#b58105', marginTop: '2px' }}>
+                    info
+                  </span>
+                  <div>
+                    <strong>Notice:</strong> Each candidate is permitted <strong>only 1 slot change</strong> per session. On the next step, you will be asked to verify and finalize this change.
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setSlotToSwitch(null)}
+                  >
+                    Keep Current Booking
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => setSwitchStep(2)}
+                  >
+                    <span>Proceed to Verification</span>
+                    <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>arrow_forward</span>
+                  </button>
+                </div>
               </div>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setSlotToSwitch(null)}
-                disabled={isSubmitting}
-              >
-                Keep Current Booking
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleConfirmSlotSwitch}
-                disabled={isSubmitting}
-              >
-                <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>check</span>
-                <span>{isSubmitting ? 'Changing Slot...' : `Switch to ${slotToSwitch.timeLabel}`}</span>
-              </button>
-            </div>
+            {/* STEP 2: FINAL WARNING, LOCK CONFIRMATION & ACKNOWLEDGMENT CHECKBOX */}
+            {switchStep === 2 && (
+              <div>
+                <div
+                  style={{
+                    padding: '16px',
+                    borderRadius: 'var(--radius-md)',
+                    backgroundColor: '#fff5f5',
+                    border: '2px solid #ef5350',
+                    marginBottom: '18px'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#c62828', fontWeight: '800', fontSize: '14px', marginBottom: '8px' }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '22px' }}>error</span>
+                    <span>FINAL WARNING: THIS CHANGE IS PERMANENT</span>
+                  </div>
+                  <ul style={{ paddingLeft: '20px', color: '#b71c1c', fontSize: '13px', lineHeight: 1.55, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <li>
+                      Your interview will be moved to <strong>{slotToSwitch.timeLabel}</strong>.
+                    </li>
+                    <li>
+                      <strong>You will have 0 slot changes remaining.</strong>
+                    </li>
+                    <li>
+                      You will <strong>NOT</strong> be able to change, reschedule, or cancel this interview slot again.
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Mandatory Acknowledgment Checkbox */}
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    borderRadius: 'var(--radius-md)',
+                    backgroundColor: 'var(--color-surface-container)',
+                    border: hasAcceptedFinalWarning ? '1.5px solid var(--color-primary)' : '1px solid var(--color-outline-variant)',
+                    marginBottom: '20px',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '12px',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => setHasAcceptedFinalWarning(!hasAcceptedFinalWarning)}
+                >
+                  <input
+                    type="checkbox"
+                    id="ack-final-lock"
+                    checked={hasAcceptedFinalWarning}
+                    onChange={(e) => setHasAcceptedFinalWarning(e.target.checked)}
+                    style={{ width: '18px', height: '18px', marginTop: '2px', cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  <label htmlFor="ack-final-lock" style={{ fontSize: '13px', color: 'var(--color-primary)', cursor: 'pointer', lineHeight: 1.45 }}>
+                    <strong>I understand and acknowledge</strong> that this is my <strong>only allowed change</strong>. After confirming, my interview time will be permanently locked and cannot be changed again.
+                  </label>
+                </div>
+
+                {switchError && (
+                  <div
+                    style={{
+                      padding: '10px 14px',
+                      borderRadius: 'var(--radius-md)',
+                      backgroundColor: 'var(--color-error-container)',
+                      color: 'var(--color-on-error-container)',
+                      fontSize: '13px',
+                      marginBottom: '16px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>error</span>
+                    <span>{switchError}</span>
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setSwitchStep(1)}
+                    disabled={isSubmitting}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>arrow_back</span>
+                    <span>Back</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleConfirmSlotSwitch}
+                    disabled={!hasAcceptedFinalWarning || isSubmitting}
+                    style={{
+                      backgroundColor: hasAcceptedFinalWarning ? 'var(--color-primary)' : 'var(--color-outline)',
+                      borderColor: hasAcceptedFinalWarning ? 'var(--color-primary)' : 'var(--color-outline)',
+                      opacity: hasAcceptedFinalWarning ? 1 : 0.6
+                    }}
+                  >
+                    <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>lock</span>
+                    <span>{isSubmitting ? 'Finalizing...' : `Confirm & Lock ${slotToSwitch.timeLabel}`}</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
