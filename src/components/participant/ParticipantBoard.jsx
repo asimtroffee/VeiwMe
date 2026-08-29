@@ -12,7 +12,10 @@ import {
   formatDateDisplay,
   formatTimeUntilMeeting,
   getHoursUntilSlot,
-  isSlotWithinCutoff
+  isSlotWithinCutoff,
+  generateGoogleCalendarUrl,
+  openGoogleCalendarDirectly,
+  downloadIcsFile
 } from '../../services/timeUtils';
 import ConfirmModal from '../common/ConfirmModal';
 
@@ -175,7 +178,13 @@ export default function ParticipantBoard({ session: initialSession, participantP
     setIsSubmitting(false);
 
     if (res.success) {
-      onShowToast(`Slot booked successfully for ${selectedSlotForBooking.timeLabel}!`);
+      onShowToast(`Slot reserved for ${selectedSlotForBooking.timeLabel}! Opening Google Calendar...`);
+      openGoogleCalendarDirectly({
+        session,
+        slot: selectedSlotForBooking,
+        candidateProfile: participantProfile,
+        booking: res.booking
+      });
       setSelectedSlotForBooking(null);
       loadData();
     } else {
@@ -198,7 +207,13 @@ export default function ParticipantBoard({ session: initialSession, participantP
       if (onUpdateProfile && res.updatedProfile) {
         onUpdateProfile(res.updatedProfile);
       }
-      onShowToast(`Your interview time has been changed to ${slotToSwitch.timeLabel}! (1/1 slot change used)`);
+      onShowToast(`Interview time changed to ${slotToSwitch.timeLabel}! Opening Google Calendar...`);
+      openGoogleCalendarDirectly({
+        session,
+        slot: slotToSwitch,
+        candidateProfile: participantProfile,
+        booking: res.booking
+      });
       setSlotToSwitch(null);
       loadData();
     } else {
@@ -730,20 +745,46 @@ export default function ParticipantBoard({ session: initialSession, participantP
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => openGoogleCalendarDirectly({ session, slot: myBooking, candidateProfile: participantProfile, booking: myBooking.booking })}
+                title="Open Google Calendar to add this event"
+                style={{ backgroundColor: '#ffffff', borderColor: '#4285F4', color: '#1a73e8' }}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '17px', color: '#4285F4' }}>
+                  calendar_add_on
+                </span>
+                <span>Google Calendar</span>
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => downloadIcsFile({ session, slot: myBooking, candidateProfile: participantProfile, booking: myBooking.booking })}
+                title="Download .ics calendar invite for Apple Calendar / Outlook"
+                style={{ backgroundColor: '#ffffff' }}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '17px' }}>
+                  download
+                </span>
+                <span>.ics Invite</span>
+              </button>
+
               {slotChangeEligibility?.canChange ? (
                 <button
-                  className="btn btn-danger"
+                  className="btn btn-danger btn-sm"
                   onClick={() => setSlotToCancel(myBooking)}
                 >
-                  <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: '17px' }}>
                     cancel
                   </span>
                   <span>Cancel Slot</span>
                 </button>
               ) : (
                 <button
-                  className="btn btn-secondary"
+                  className="btn btn-secondary btn-sm"
                   style={{ opacity: 0.85 }}
                   onClick={() => {
                     setIneligibilityModal({
@@ -754,10 +795,10 @@ export default function ParticipantBoard({ session: initialSession, participantP
                     });
                   }}
                 >
-                  <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: '17px' }}>
                     lock
                   </span>
-                  <span>Slot Change Locked</span>
+                  <span>Locked</span>
                 </button>
               )}
             </div>
