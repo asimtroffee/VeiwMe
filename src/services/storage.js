@@ -13,6 +13,7 @@ import {
   getDocs,
   setDoc,
   deleteDoc,
+  runTransaction,
   onSnapshot
 } from 'firebase/firestore';
 
@@ -25,9 +26,11 @@ const ADMIN_AUTH_KEY = 'viewme_admin_auth_v2';
 const ADMIN_LOCKOUT_KEY = 'viewme_admin_lockout_v2';
 const PARTICIPANT_KEY = 'viewme_participant_profile_v2';
 
-const ADMIN_MASTER_PASSWORD = 'admin';
+// Secure Admin Password from environment variable with fallback
+const ADMIN_MASTER_PASSWORD = (import.meta.env.VITE_ADMIN_PASSWORD || 'admin').trim();
 const MAX_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
+const SESSION_AUTH_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours expiring session
 
 // Device & Client Metadata Helper
 function getClientMetadata() {
@@ -448,13 +451,21 @@ export function verifyAdminPassword(inputPassword) {
     return { success: false, error: `Too many failed attempts. Locked out for ${lockout.minutesLeft} more minute(s).` };
   }
 
-  if (inputPassword === ADMIN_MASTER_PASSWORD) {
+  const cleanInput = (inputPassword || '').trim();
+  if (cleanInput === ADMIN_MASTER_PASSWORD) {
     localStorage.removeItem(ADMIN_LOCKOUT_KEY);
-    localStorage.setItem(ADMIN_AUTH_KEY, JSON.stringify({ authenticated: true, timestamp: Date.now() }));
+    const sessionToken = {
+      authenticated: true,
+      timestamp: Date.now(),
+      expiresAt: Date.now() + SESSION_AUTH_DURATION_MS,
+      token: `viewme_adm_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`
+    };
+    localStorage.setItem(ADMIN_AUTH_KEY, JSON.stringify(sessionToken));
+
     logActivityEvent({
       type: 'ADMIN_LOGIN',
       actor: 'Admin',
-      details: 'Administrator console unlocked'
+      details: 'Administrator console unlocked with expiring session token'
     });
     return { success: true };
   }
@@ -483,7 +494,14 @@ export function isSessionAdminAuthenticated() {
   if (!auth) return false;
   try {
     const parsed = JSON.parse(auth);
-    return Boolean(parsed && parsed.authenticated);
+    if (parsed && parsed.authenticated) {
+      if (parsed.expiresAt && parsed.expiresAt <= Date.now()) {
+        localStorage.removeItem(ADMIN_AUTH_KEY);
+        return false;
+      }
+      return true;
+    }
+    return false;
   } catch { return false; }
 }
 
@@ -953,17 +971,17 @@ export function checkSlotChangeEligibility(sessionId, slotId, participantProfile
 }
 
 // -------------------------------------------------------------
-// Slot Booking (Atomic, 1 Slot Limit, Conflict Shield)
+// Slot Booking (Atomic Transaction, 1 Slot Limit, Concurrency Shield)
 // -------------------------------------------------------------
 
-export function bookSlot(sessionId, slotId, { candidateName, candidateContact, candidateCategory = 'A', candidateEmail = '', candidatePhone = '' }) {
+export async function bookSlot(sessionId, slotId, { candidateName, candidateContact, candidateCategory = 'A', candidateEmail = '', candidatePhone = '' }) {
   const bookings = getRawBookings();
   const blockedSlots = getRawBlockedSlots();
   const sessions = getRawSessions();
   const session = sessions.find((s) => s.id === sessionId);
   const key = `${sessionId}_${slotId}`;
 
-  // Check if slot is blocked by admin
+  // Client-side quick validation
   if (blockedSlots[key]) {
     return {
       success: false,
@@ -972,7 +990,6 @@ export function bookSlot(sessionId, slotId, { candidateName, candidateContact, c
     };
   }
 
-  // Conflict check: Already taken?
   if (bookings[key]) {
     logActivityEvent({
       type: 'BOOKING_CONFLICT',
@@ -1009,7 +1026,6 @@ export function bookSlot(sessionId, slotId, { candidateName, candidateContact, c
     }
   }
 
-  // Lock in booking
   const bookingRecord = {
     sessionId,
     slotId,
@@ -1021,24 +1037,70 @@ export function bookSlot(sessionId, slotId, { candidateName, candidateContact, c
     bookedAt: new Date().toISOString()
   };
 
+  const attKey = `${sessionId}_${(candidateEmail || candidateContact || candidateName).toLowerCase().trim()}`;
+  const attendees = getRawAttendees();
+  let attendeeRecord = attendees[attKey];
+  if (attendeeRecord) {
+    attendeeRecord = {
+      ...attendeeRecord,
+      status: 'booked',
+      bookedSlotId: slotId,
+      lastSeenAt: new Date().toISOString()
+    };
+  }
+
+  // ATOMIC FIRESTORE TRANSACTION (Guarantees zero double-bookings under concurrent traffic)
+  if (isFirebaseConfigured() && db) {
+    try {
+      await runTransaction(db, async (transaction) => {
+        const bookingDocRef = doc(db, 'bookings', key);
+        const blockedDocRef = doc(db, 'blocked_slots', key);
+
+        const [bookingSnap, blockedSnap] = await Promise.all([
+          transaction.get(bookingDocRef),
+          transaction.get(blockedDocRef)
+        ]);
+
+        if (blockedSnap.exists()) {
+          throw new Error('This time slot has been marked unavailable by the session administrator.');
+        }
+
+        if (bookingSnap.exists()) {
+          const existingData = bookingSnap.data();
+          throw new Error(`This slot was just reserved by ${existingData.candidateName || 'another participant'}. Please select another time.`);
+        }
+
+        transaction.set(bookingDocRef, bookingRecord);
+
+        if (attendeeRecord) {
+          const attendeeDocRef = doc(db, 'attendees', attKey);
+          transaction.set(attendeeDocRef, attendeeRecord, { merge: true });
+        }
+      });
+    } catch (err) {
+      console.warn('Firestore booking transaction rejected:', err);
+      logActivityEvent({
+        type: 'BOOKING_CONFLICT',
+        sessionId: sessionId,
+        sessionTitle: session?.title || 'Session',
+        actor: candidateName,
+        details: `Concurrent booking collision detected on slot ${slotId}`
+      });
+      return {
+        success: false,
+        conflict: true,
+        error: err.message || 'This slot is no longer available. Please choose a different time.'
+      };
+    }
+  }
+
+  // Commit locally
   bookings[key] = bookingRecord;
   saveRawBookings(bookings);
 
-  // Update attendee status
-  const attendees = getRawAttendees();
-  const attKey = `${sessionId}_${(candidateEmail || candidateContact || candidateName).toLowerCase().trim()}`;
-  if (attendees[attKey]) {
-    attendees[attKey].status = 'booked';
-    attendees[attKey].bookedSlotId = slotId;
-    attendees[attKey].lastSeenAt = new Date().toISOString();
+  if (attendeeRecord) {
+    attendees[attKey] = attendeeRecord;
     saveRawAttendees(attendees);
-  }
-
-  // Firestore sync
-  if (isFirebaseConfigured() && db) {
-    setDoc(doc(db, 'bookings', key), bookingRecord).catch((err) => {
-      console.warn('Could not sync booking to Firestore:', err);
-    });
   }
 
   logActivityEvent({
@@ -1058,10 +1120,10 @@ export function bookSlot(sessionId, slotId, { candidateName, candidateContact, c
 }
 
 // -------------------------------------------------------------
-// Reschedule / Change Slot (Enforces 1-Time Limit & 3-Hour Cutoff)
+// Reschedule / Change Slot (Atomic 2-Doc Transaction & Limits)
 // -------------------------------------------------------------
 
-export function rescheduleBooking(sessionId, oldSlotId, newSlotId, candidateProfile) {
+export async function rescheduleBooking(sessionId, oldSlotId, newSlotId, candidateProfile) {
   // Check eligibility on old slot
   const eligibility = checkSlotChangeEligibility(sessionId, oldSlotId, candidateProfile);
   if (!eligibility.canChange) {
@@ -1079,7 +1141,7 @@ export function rescheduleBooking(sessionId, oldSlotId, newSlotId, candidateProf
   const newKey = `${sessionId}_${newSlotId}`;
   const oldKey = `${sessionId}_${oldSlotId}`;
 
-  // Check if new slot is blocked or already taken
+  // Check if new slot is blocked or already taken locally
   if (blockedSlots[newKey]) {
     return {
       success: false,
@@ -1101,10 +1163,6 @@ export function rescheduleBooking(sessionId, oldSlotId, newSlotId, candidateProf
   const candidateContact = candidateProfile.contact || oldBooking?.candidateContact || '';
   const candidateCategory = candidateProfile.category || oldBooking?.candidateCategory || 'A';
 
-  // Release old booking
-  delete bookings[oldKey];
-
-  // Set new booking
   const newBookingRecord = {
     sessionId,
     slotId: newSlotId,
@@ -1118,36 +1176,75 @@ export function rescheduleBooking(sessionId, oldSlotId, newSlotId, candidateProf
     rescheduledAt: new Date().toISOString()
   };
 
-  bookings[newKey] = newBookingRecord;
-  saveRawBookings(bookings);
-
-  // Increment slotChangeCount for attendee (1 of 1 used)
   const attendees = getRawAttendees();
   const attKey = `${sessionId}_${(candidateEmail || candidateContact || candidateName).toLowerCase().trim()}`;
   const nextSlotChangeCount = (eligibility.changeCount || 0) + 1;
+  let attendeeRecord = attendees[attKey];
 
-  if (attendees[attKey]) {
-    attendees[attKey].status = 'booked';
-    attendees[attKey].bookedSlotId = newSlotId;
-    attendees[attKey].slotChangeCount = nextSlotChangeCount;
-    attendees[attKey].lastSeenAt = new Date().toISOString();
-    saveRawAttendees(attendees);
+  if (attendeeRecord) {
+    attendeeRecord = {
+      ...attendeeRecord,
+      status: 'booked',
+      bookedSlotId: newSlotId,
+      slotChangeCount: nextSlotChangeCount,
+      lastSeenAt: new Date().toISOString()
+    };
   }
 
   const updatedProfile = {
     ...candidateProfile,
     slotChangeCount: nextSlotChangeCount
   };
-  saveParticipantProfile(sessionId, updatedProfile);
 
-  // Firestore sync
+  // ATOMIC FIRESTORE RESCHEDULE TRANSACTION (Delete old + Insert new in single atomic commit)
   if (isFirebaseConfigured() && db) {
-    deleteDoc(doc(db, 'bookings', oldKey)).catch(() => {});
-    setDoc(doc(db, 'bookings', newKey), newBookingRecord).catch(() => {});
-    if (attendees[attKey]) {
-      setDoc(doc(db, 'attendees', attKey), attendees[attKey], { merge: true }).catch(() => {});
+    try {
+      await runTransaction(db, async (transaction) => {
+        const oldDocRef = doc(db, 'bookings', oldKey);
+        const newDocRef = doc(db, 'bookings', newKey);
+        const blockedDocRef = doc(db, 'blocked_slots', newKey);
+
+        const [newSnap, blockedSnap] = await Promise.all([
+          transaction.get(newDocRef),
+          transaction.get(blockedDocRef)
+        ]);
+
+        if (blockedSnap.exists()) {
+          throw new Error('The selected new time slot has been marked unavailable.');
+        }
+
+        if (newSnap.exists()) {
+          const existing = newSnap.data();
+          throw new Error(`The slot was just taken by another candidate (${existing.candidateName || 'another participant'}). Please pick another available time.`);
+        }
+
+        transaction.delete(oldDocRef);
+        transaction.set(newDocRef, newBookingRecord);
+
+        if (attendeeRecord) {
+          const attendeeDocRef = doc(db, 'attendees', attKey);
+          transaction.set(attendeeDocRef, attendeeRecord, { merge: true });
+        }
+      });
+    } catch (err) {
+      console.warn('Firestore reschedule transaction failed:', err);
+      return {
+        success: false,
+        error: err.message || 'Failed to switch time slot. The new slot might be taken.'
+      };
     }
   }
+
+  // Commit locally
+  delete bookings[oldKey];
+  bookings[newKey] = newBookingRecord;
+  saveRawBookings(bookings);
+
+  if (attendeeRecord) {
+    attendees[attKey] = attendeeRecord;
+    saveRawAttendees(attendees);
+  }
+  saveParticipantProfile(sessionId, updatedProfile);
 
   logActivityEvent({
     type: 'SLOT_RESCHEDULED',
@@ -1168,7 +1265,7 @@ export function rescheduleBooking(sessionId, oldSlotId, newSlotId, candidateProf
   };
 }
 
-export function cancelBooking(sessionId, slotId, candidateProfile = null, isCandidateAction = false) {
+export async function cancelBooking(sessionId, slotId, candidateProfile = null, isCandidateAction = false) {
   if (isCandidateAction && candidateProfile) {
     const eligibility = checkSlotChangeEligibility(sessionId, slotId, candidateProfile);
     if (!eligibility.canChange) {
@@ -1217,11 +1314,13 @@ export function cancelBooking(sessionId, slotId, candidateProfile = null, isCand
 
   // Firestore sync
   if (isFirebaseConfigured() && db) {
-    deleteDoc(doc(db, 'bookings', key)).catch((err) => {
+    try {
+      await deleteDoc(doc(db, 'bookings', key));
+      if (attendees[attKey]) {
+        await setDoc(doc(db, 'attendees', attKey), attendees[attKey], { merge: true });
+      }
+    } catch (err) {
       console.warn('Could not delete booking from Firestore:', err);
-    });
-    if (attendees[attKey]) {
-      setDoc(doc(db, 'attendees', attKey), attendees[attKey], { merge: true }).catch(() => {});
     }
   }
 

@@ -160,14 +160,14 @@ export default function ParticipantBoard({ session: initialSession, participantP
     setSelectedSlotForBooking(slot);
   };
 
-  const handleConfirmBooking = (e) => {
+  const handleConfirmBooking = async (e) => {
     e.preventDefault();
     if (!selectedSlotForBooking || isSubmitting) return;
 
     setIsSubmitting(true);
     setBookingConflictError('');
 
-    const res = bookSlot(session.id, selectedSlotForBooking.id, {
+    const res = await bookSlot(session.id, selectedSlotForBooking.id, {
       candidateName: participantProfile.name,
       candidateCategory: participantProfile.category || 'A',
       candidateEmail: participantProfile.email || '',
@@ -194,13 +194,13 @@ export default function ParticipantBoard({ session: initialSession, participantP
     }
   };
 
-  const handleConfirmSlotSwitch = () => {
+  const handleConfirmSlotSwitch = async () => {
     if (!slotToSwitch || !myBooking || isSubmitting) return;
 
     setIsSubmitting(true);
     setSwitchError('');
 
-    const res = rescheduleBooking(session.id, myBooking.id, slotToSwitch.id, participantProfile);
+    const res = await rescheduleBooking(session.id, myBooking.id, slotToSwitch.id, participantProfile);
     setIsSubmitting(false);
 
     if (res.success) {
@@ -222,9 +222,9 @@ export default function ParticipantBoard({ session: initialSession, participantP
     }
   };
 
-  const handleConfirmCancelMyBooking = () => {
+  const handleConfirmCancelMyBooking = async () => {
     if (!slotToCancel) return;
-    const res = cancelBooking(session.id, slotToCancel.id, participantProfile, true);
+    const res = await cancelBooking(session.id, slotToCancel.id, participantProfile, true);
     if (res.success) {
       onShowToast('Your interview slot booking has been cancelled.');
       loadData();

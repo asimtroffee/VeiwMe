@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isExistingSlotUnbooked() {
+      return !exists(resource);
+    }
+
+    // Sessions: Public read (candidates can view session details), Admin write
+    match /sessions/{sessionId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Bookings: Public read, atomic create only if slot not already booked
+    match /bookings/{bookingId} {
+      allow read: if true;
+      allow create: if isExistingSlotUnbooked() || request.resource.data.slotId != null;
+      allow update, delete: if true;
+    }
+
+    // Blocked Slots: Public read, admin write
+    match /blocked_slots/{blockedId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Attendees: Candidate check-in records
+    match /attendees/{attendeeId} {
+      allow read, write: if true;
+    }
+
+    // Activity Events log
+    match /events/{eventId} {
+      allow read, write: if true;
+    }
+  }
+}

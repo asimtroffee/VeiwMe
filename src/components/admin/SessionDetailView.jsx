@@ -43,9 +43,9 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     onShowToast('Unique session link copied to clipboard!');
   };
 
-  const handleConfirmCancelSlot = () => {
+  const handleConfirmCancelSlot = async () => {
     if (!slotToCancel) return;
-    const res = cancelBooking(sessionId, slotToCancel.id);
+    const res = await cancelBooking(sessionId, slotToCancel.id);
     if (res.success) {
       onShowToast(`Cancelled booking for ${slotToCancel.booking?.candidateName || 'slot'}`);
       loadData();
