@@ -30,13 +30,8 @@ const ATTENDEES_KEY = 'viewme_attendees_v2';
 const BLOCKED_SLOTS_KEY = 'viewme_blocked_slots_v2';
 const EVENTS_KEY = 'viewme_activity_events_v2';
 const ADMIN_AUTH_KEY = 'viewme_admin_auth_v2';
-const ADMIN_LOCKOUT_KEY = 'viewme_admin_lockout_v2';
 const PARTICIPANT_KEY = 'viewme_participant_profile_v2';
 
-// Secure Admin Password from environment variable with fallback
-const ADMIN_MASTER_PASSWORD = (import.meta.env.VITE_ADMIN_PASSWORD || 'ViewMe.Troffee.admin').trim();
-const MAX_ATTEMPTS = 5;
-const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
 const SESSION_AUTH_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours expiring session
 
 // Device & Client Metadata Helper
@@ -491,79 +486,27 @@ export function getSessionActivityEvents(sessionId) {
 }
 
 // -------------------------------------------------------------
-// Admin Auth & Lockout
+// Admin Firebase Authentication
 // -------------------------------------------------------------
 
-export function getAdminLockoutStatus() {
-  const data = localStorage.getItem(ADMIN_LOCKOUT_KEY);
-  if (!data) return { isLocked: false, remainingAttempts: MAX_ATTEMPTS, lockoutUntil: 0 };
+export async function loginAdminWithFirebase(email, password) {
+  const cleanEmail = (email || '').trim();
+  const cleanPass = (password || '').trim();
+
+  if (!cleanEmail || !cleanPass) {
+    return { success: false, error: 'Email and password are required.' };
+  }
+
+  if (!isFirebaseConfigured() || !auth) {
+    return { success: false, error: 'Firebase Auth is not initialized. Please verify configuration.' };
+  }
+
   try {
-    const parsed = JSON.parse(data);
-    const now = Date.now();
-    if (parsed.lockoutUntil && parsed.lockoutUntil > now) {
-      const minutesLeft = Math.ceil((parsed.lockoutUntil - now) / 60000);
-      return { isLocked: true, remainingAttempts: 0, lockoutUntil: parsed.lockoutUntil, minutesLeft };
-    }
-    if (parsed.lockoutUntil && parsed.lockoutUntil <= now) {
-      localStorage.removeItem(ADMIN_LOCKOUT_KEY);
-      return { isLocked: false, remainingAttempts: MAX_ATTEMPTS, lockoutUntil: 0 };
-    }
-    return { isLocked: false, remainingAttempts: Math.max(0, MAX_ATTEMPTS - (parsed.failedAttempts || 0)), lockoutUntil: 0 };
-  } catch {
-    return { isLocked: false, remainingAttempts: MAX_ATTEMPTS, lockoutUntil: 0 };
-  }
-}
-
-export async function verifyAdminPassword(inputPassword, inputEmail = '') {
-  const lockout = getAdminLockoutStatus();
-  if (lockout.isLocked) {
-    return { success: false, error: `Too many failed attempts. Locked out for ${lockout.minutesLeft} more minute(s).` };
-  }
-
-  const cleanInput = (inputPassword || '').trim();
-  const cleanEmail = (inputEmail || '').trim();
-
-  // 1. If email is provided, attempt Firebase Authentication
-  if (cleanEmail && isFirebaseConfigured() && auth) {
-    try {
-      const userCred = await signInWithEmailAndPassword(auth, cleanEmail, cleanInput);
-      localStorage.removeItem(ADMIN_LOCKOUT_KEY);
-      const sessionToken = {
-        authenticated: true,
-        email: userCred.user?.email || cleanEmail,
-        uid: userCred.user?.uid,
-        timestamp: Date.now(),
-        expiresAt: Date.now() + SESSION_AUTH_DURATION_MS,
-        token: `viewme_adm_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`
-      };
-      localStorage.setItem(ADMIN_AUTH_KEY, JSON.stringify(sessionToken));
-
-      logActivityEvent({
-        type: 'ADMIN_LOGIN',
-        actor: cleanEmail,
-        details: 'Administrator signed in via Firebase Auth'
-      });
-      return { success: true, email: cleanEmail };
-    } catch (firebaseErr) {
-      console.warn('Firebase Auth sign-in failed, trying fallback:', firebaseErr.code);
-    }
-  }
-
-  // 2. Master Password Verification
-  if (cleanInput === ADMIN_MASTER_PASSWORD) {
-    localStorage.removeItem(ADMIN_LOCKOUT_KEY);
-
-    // If Firebase Auth is active, sign in anonymously for authorized rules access
-    if (isFirebaseConfigured() && auth && !auth.currentUser) {
-      try {
-        await signInAnonymously(auth);
-      } catch (e) {
-        console.warn('Anonymous auth note:', e);
-      }
-    }
-
+    const userCred = await signInWithEmailAndPassword(auth, cleanEmail, cleanPass);
     const sessionToken = {
       authenticated: true,
+      email: userCred.user?.email || cleanEmail,
+      uid: userCred.user?.uid,
       timestamp: Date.now(),
       expiresAt: Date.now() + SESSION_AUTH_DURATION_MS,
       token: `viewme_adm_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`
@@ -572,36 +515,39 @@ export async function verifyAdminPassword(inputPassword, inputEmail = '') {
 
     logActivityEvent({
       type: 'ADMIN_LOGIN',
-      actor: 'Admin',
-      details: 'Administrator console unlocked with master credentials'
+      actor: cleanEmail,
+      details: 'Administrator successfully authenticated via Firebase'
     });
-    return { success: true };
-  }
 
-  const currentLockout = JSON.parse(localStorage.getItem(ADMIN_LOCKOUT_KEY) || '{"failedAttempts":0}');
-  const newAttempts = (currentLockout.failedAttempts || 0) + 1;
-
-  if (newAttempts >= MAX_ATTEMPTS) {
-    const lockoutUntil = Date.now() + LOCKOUT_DURATION_MS;
-    localStorage.setItem(ADMIN_LOCKOUT_KEY, JSON.stringify({ failedAttempts: newAttempts, lockoutUntil }));
-    logActivityEvent({
-      type: 'ADMIN_LOCKOUT_TRIGGERED',
-      actor: 'System',
-      details: 'Max 5 invalid password attempts reached. 15-minute security lockout triggered.'
-    });
-    return { success: false, error: 'Incorrect password. Max 5 attempts reached. You are locked out for 15 minutes.' };
-  } else {
-    localStorage.setItem(ADMIN_LOCKOUT_KEY, JSON.stringify({ failedAttempts: newAttempts, lockoutUntil: 0 }));
-    const left = MAX_ATTEMPTS - newAttempts;
-    return { success: false, error: `Incorrect password. ${left} attempt${left === 1 ? '' : 's'} remaining.` };
+    broadcast('ADMIN_AUTH_CHANGED', { authenticated: true });
+    return { success: true, email: cleanEmail, user: userCred.user };
+  } catch (err) {
+    console.error('Firebase Auth error:', err.code, err.message);
+    let userMsg = 'Invalid email or password.';
+    if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+      userMsg = 'Invalid administrator email or password.';
+    } else if (err.code === 'auth/too-many-requests') {
+      userMsg = 'Access temporarily locked by Firebase due to multiple failed attempts. Please try again in a few minutes.';
+    } else if (err.code === 'auth/network-request-failed') {
+      userMsg = 'Network error. Please check your internet connection.';
+    } else if (err.message) {
+      userMsg = err.message;
+    }
+    return { success: false, error: userMsg };
   }
 }
 
+// Alias for backward compatibility
+export async function verifyAdminPassword(inputPassword, inputEmail = '') {
+  return loginAdminWithFirebase(inputEmail, inputPassword);
+}
+
 export function isSessionAdminAuthenticated() {
-  const auth = localStorage.getItem(ADMIN_AUTH_KEY);
-  if (!auth) return false;
+  if (auth && auth.currentUser) return true;
+  const sessionAuth = localStorage.getItem(ADMIN_AUTH_KEY);
+  if (!sessionAuth) return false;
   try {
-    const parsed = JSON.parse(auth);
+    const parsed = JSON.parse(sessionAuth);
     if (parsed && parsed.authenticated) {
       if (parsed.expiresAt && parsed.expiresAt <= Date.now()) {
         localStorage.removeItem(ADMIN_AUTH_KEY);
@@ -610,7 +556,9 @@ export function isSessionAdminAuthenticated() {
       return true;
     }
     return false;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 export function logoutAdmin() {
@@ -621,8 +569,9 @@ export function logoutAdmin() {
   logActivityEvent({
     type: 'ADMIN_LOGOUT',
     actor: 'Admin',
-    details: 'Administrator console locked'
+    details: 'Administrator logged out'
   });
+  broadcast('ADMIN_AUTH_CHANGED', { authenticated: false });
 }
 
 // -------------------------------------------------------------

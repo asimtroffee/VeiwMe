@@ -29,5 +29,6 @@ dist-ssr
 .env.production
 .env.development
 
-# Vercel
+# Vercel & Firebase cache
 .vercel
+.firebase

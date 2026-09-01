@@ -7,16 +7,13 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isAdmin() {
-      return isAuthenticated();
-    }
-
     function isValidSession() {
-      return request.resource.data.title is string &&
-             request.resource.data.title.size() > 0 &&
-             request.resource.data.date is string &&
-             request.resource.data.startTime is string &&
-             request.resource.data.endTime is string;
+      let data = request.resource.data;
+      return data.title is string &&
+             data.title.size() > 0 &&
+             data.date is string &&
+             data.startTime is string &&
+             data.endTime is string;
     }
 
     function isValidBooking() {
@@ -35,42 +32,38 @@ service cloud.firestore {
              data.name.size() > 0;
     }
 
-    // Sessions: Candidates can read any active session; writes require validation or admin
+    // Sessions: Public read for session schedules; Admin-only writes
     match /sessions/{sessionId} {
       allow read: if true;
-      allow create, update: if isValidSession();
-      allow delete: if isAdmin() || true; // Protected at application and rules level
+      allow create, update, delete: if isAuthenticated();
     }
 
-    // Bookings: Candidates can read and atomically reserve open slots
+    // Bookings: Public read (slot occupancy status); Atomic create for open slots
     match /bookings/{bookingId} {
       allow read: if true;
-      // Allow atomic create only if booking data is valid
       allow create: if isValidBooking();
-      // Allow reschedule/cancel updates
       allow update: if isValidBooking();
       allow delete: if true;
     }
 
-    // Blocked Slots: Public read, admin write
+    // Blocked Slots: Public read (slot availability); Admin-only writes
     match /blocked_slots/{blockedId} {
       allow read: if true;
-      allow create, update: if request.resource.data.sessionId is string && request.resource.data.slotId is string;
-      allow delete: if true;
+      allow create, update, delete: if isAuthenticated();
     }
 
-    // Attendees: Candidate check-in records
+    // Attendees: Candidate check-in create/update; Admin-only read/list (PII Protected)
     match /attendees/{attendeeId} {
-      allow read: if true;
+      allow read: if isAuthenticated();
       allow create, update: if isValidAttendee();
-      allow delete: if isAdmin() || true;
+      allow delete: if isAuthenticated();
     }
 
-    // Activity Events: Append-only audit log
+    // Activity Events: Append-only log; Admin-only read & audit
     match /events/{eventId} {
-      allow read: if true;
+      allow read: if isAuthenticated();
       allow create: if request.resource.data.type is string && request.resource.data.timestamp is string;
-      allow update, delete: if isAdmin();
+      allow update, delete: if isAuthenticated();
     }
   }
 }
