@@ -136,6 +136,8 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
                 value={timezone}
                 onChange={(e) => setTimezone(e.target.value)}
               >
+                <option value="MYT">MYT (Malaysia Time, UTC+8)</option>
+                <option value="SGT">SGT (Singapore Time, UTC+8)</option>
                 <option value="EST">EST (Eastern Standard Time)</option>
                 <option value="CST">CST (Central Standard Time)</option>
                 <option value="MST">MST (Mountain Standard Time)</option>
@@ -145,7 +147,7 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
                 <option value="BST">BST (British Summer Time)</option>
                 <option value="CET">CET (Central European Time)</option>
                 <option value="IST">IST (India Standard Time)</option>
-                <option value="SGT">SGT (Singapore Time)</option>
+                <option value="JST">JST (Japan Standard Time, UTC+9)</option>
                 <option value="AEST">AEST (Australian Eastern Time)</option>
               </select>
             </div>

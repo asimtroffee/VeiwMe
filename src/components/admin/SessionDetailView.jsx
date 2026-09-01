@@ -13,6 +13,7 @@ import {
 } from '../../services/storage';
 import { formatDateDisplay } from '../../services/timeUtils';
 import ConfirmModal from '../common/ConfirmModal';
+import EditSessionModal from './EditSessionModal';
 
 export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
   const [session, setSession] = useState(null);
@@ -20,6 +21,7 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
   const [activeTab, setActiveTab] = useState('slots'); // 'slots' | 'attendees'
   const [selectedCategoryTab, setSelectedCategoryTab] = useState('all'); // 'all' | category name
   const [isManagingCategories, setIsManagingCategories] = useState(false);
+  const [isEditingSessionModal, setIsEditingSessionModal] = useState(false);
   const [categoryEditList, setCategoryEditList] = useState([]);
   const [newCatInput, setNewCatInput] = useState('');
   const [filterPeriod, setFilterPeriod] = useState('all'); // all | available | booked | blocked | morning | afternoon | evening
@@ -535,6 +537,15 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
           <button
             className="btn btn-secondary"
+            onClick={() => setIsEditingSessionModal(true)}
+            title="Edit session details, timezone, date, and times"
+            style={{ borderColor: 'var(--color-primary)', color: 'var(--color-primary)', backgroundColor: 'rgba(99, 102, 241, 0.08)' }}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>edit_calendar</span>
+            <span>Edit Session Info</span>
+          </button>
+          <button
+            className="btn btn-secondary"
             onClick={handleLaunchTesterFresh}
             title="Reset tester profile and open the check-in info form from scratch"
             style={{ borderColor: '#8b5cf6', color: '#6d28d9', backgroundColor: 'rgba(139, 92, 246, 0.08)' }}
@@ -571,9 +582,21 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
               <span className="chip chip-neutral">{session.totalSlots} Slots ({session.slotDuration || 15} min)</span>
               <span className="chip chip-neutral">{attendees.length} Checked-in Candidates</span>
             </div>
-            <h1 className="headline-lg" style={{ color: 'var(--color-primary)', marginBottom: '8px' }}>
-              {session.title}
-            </h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px', flexWrap: 'wrap' }}>
+              <h1 className="headline-lg" style={{ color: 'var(--color-primary)', margin: 0 }}>
+                {session.title}
+              </h1>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setIsEditingSessionModal(true)}
+                title="Edit title, date, timezone (e.g. EST to MYT), and times"
+                style={{ padding: '4px 8px', fontSize: '12px' }}
+              >
+                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>edit</span>
+                <span>Edit Details</span>
+              </button>
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px', color: 'var(--color-secondary)', fontSize: '14px' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>calendar_today</span>
@@ -1396,6 +1419,18 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
         isDanger={true}
         onConfirm={handleConfirmCancelSlot}
         onCancel={() => setSlotToCancel(null)}
+      />
+
+      {/* Modal for Editing Session Details */}
+      <EditSessionModal
+        isOpen={isEditingSessionModal}
+        session={session}
+        onClose={() => setIsEditingSessionModal(false)}
+        onUpdated={(updated) => {
+          setSession(updated);
+          loadData();
+          if (onShowToast) onShowToast('Session settings updated successfully!');
+        }}
       />
     </div>
   );

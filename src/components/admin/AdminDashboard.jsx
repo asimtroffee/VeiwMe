@@ -6,6 +6,7 @@ import SessionDetailView from './SessionDetailView';
 import CandidateDirectory from './CandidateDirectory';
 import ActivityLogView from './ActivityLogView';
 import ConfirmModal from '../common/ConfirmModal';
+import EditSessionModal from './EditSessionModal';
 
 export default function AdminDashboard({ onLogout, onShowToast }) {
   const [sessions, setSessions] = useState([]);
@@ -13,6 +14,7 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [sessionToEdit, setSessionToEdit] = useState(null);
   const [sessionToDelete, setSessionToDelete] = useState(null);
 
   const loadSessions = () => {
@@ -327,15 +329,32 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
                           <span className="chip chip-neutral">{session.timezone}</span>
                           {dateBadge && <span className="chip chip-accent">{dateBadge}</span>}
                         </div>
-                        <button
-                          onClick={() => setSessionToDelete(session)}
-                          style={{ color: 'var(--color-secondary)', padding: '4px', borderRadius: '4px' }}
-                          title="Delete Session"
-                        >
-                          <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
-                            delete
-                          </span>
-                        </button>
+                        <div style={{ display: 'flex', gap: '4px' }}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSessionToEdit(session);
+                            }}
+                            style={{ color: 'var(--color-primary)', padding: '4px', borderRadius: '4px' }}
+                            title="Edit Session Details / Timezone"
+                          >
+                            <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                              edit
+                            </span>
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSessionToDelete(session);
+                            }}
+                            style={{ color: 'var(--color-secondary)', padding: '4px', borderRadius: '4px' }}
+                            title="Delete Session"
+                          >
+                            <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                              delete
+                            </span>
+                          </button>
+                        </div>
                       </div>
 
                       {/* Title & Timing */}
@@ -439,6 +458,17 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
         onCreated={(newSession) => {
           loadSessions();
           onShowToast(`Session "${newSession.title}" created with ${newSession.startTime}–${newSession.endTime} slots!`);
+        }}
+      />
+
+      {/* Edit Session Modal */}
+      <EditSessionModal
+        isOpen={Boolean(sessionToEdit)}
+        session={sessionToEdit}
+        onClose={() => setSessionToEdit(null)}
+        onUpdated={(updated) => {
+          loadSessions();
+          onShowToast(`Session "${updated.title}" updated successfully!`);
         }}
       />
 

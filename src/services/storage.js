@@ -803,6 +803,51 @@ export function createNewSession({
   return newSession;
 }
 
+export function updateSessionDetails(sessionId, updates = {}) {
+  const sessions = getRawSessions();
+  const index = sessions.findIndex((s) => s.id === sessionId);
+  if (index === -1) return { success: false, error: 'Session not found.' };
+
+  const prev = sessions[index];
+  const validCategories = updates.categories && Array.isArray(updates.categories) && updates.categories.length > 0
+    ? updates.categories.map((c) => c.trim()).filter(Boolean)
+    : prev.categories || ['Category A', 'Category B', 'Category C'];
+
+  const updated = {
+    ...prev,
+    ...(updates.title !== undefined && { title: updates.title.trim() }),
+    ...(updates.date !== undefined && { date: updates.date }),
+    ...(updates.startTime !== undefined && { startTime: updates.startTime }),
+    ...(updates.endTime !== undefined && { endTime: updates.endTime }),
+    ...(updates.slotDuration !== undefined && { slotDuration: Number(updates.slotDuration) || prev.slotDuration }),
+    ...(updates.timezone !== undefined && { timezone: updates.timezone.trim() }),
+    ...(updates.description !== undefined && { description: (updates.description || '').trim() }),
+    ...(updates.meetingLink !== undefined && { meetingLink: (updates.meetingLink || '').trim() }),
+    ...(updates.categories !== undefined && { categories: validCategories }),
+    updatedAt: new Date().toISOString()
+  };
+
+  sessions[index] = updated;
+  saveRawSessions(sessions);
+
+  if (isFirebaseConfigured() && db) {
+    setDoc(doc(db, 'sessions', sessionId), updated, { merge: true }).catch((err) => {
+      console.warn('Could not sync updated session details to Firestore:', err);
+    });
+  }
+
+  logActivityEvent({
+    type: 'SESSION_UPDATED',
+    sessionId,
+    sessionTitle: updated.title,
+    actor: 'Admin',
+    details: `Updated session settings (Title: "${updated.title}", Date: ${updated.date}, Time: ${updated.startTime}–${updated.endTime} ${updated.timezone})`
+  });
+
+  broadcast('SESSION_UPDATED', { sessionId, session: updated });
+  return { success: true, session: updated };
+}
+
 export function updateSessionCategories(sessionId, categories) {
   const sessions = getRawSessions();
   const index = sessions.findIndex((s) => s.id === sessionId);
