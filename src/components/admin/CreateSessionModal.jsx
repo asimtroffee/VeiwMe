@@ -288,7 +288,7 @@ export default function CreateSessionModal({ isOpen, onClose, onCreated }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>info</span>
               <span>
-                {Math.max(1, calculateSlotCount())} slots per track × {categories.length} categories = <strong>{totalGeneratedSlots} total seats</strong>
+                {previewSlots.length} slots per track × {categories.length} categories = <strong>{previewSlots.length * categories.length} total seats</strong>
               </span>
             </div>
           </div>
