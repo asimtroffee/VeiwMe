@@ -7,6 +7,8 @@ import {
   updateSessionMeetingLink,
   updateSessionDescription,
   updateSessionCategories,
+  resetTesterSessionState,
+  clearParticipantProfile,
   subscribeToSync
 } from '../../services/storage';
 import { formatDateDisplay } from '../../services/timeUtils';
@@ -87,6 +89,13 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
       localStorage.setItem(`viewme_participant_${session.id}`, JSON.stringify(testerProfile));
       window.location.hash = `#/session/${session.id}`;
     }
+  };
+
+  const handleLaunchTesterFresh = async () => {
+    if (!session) return;
+    await resetTesterSessionState(session.id, 'tester@viewme.internal');
+    clearParticipantProfile(session.id);
+    window.location.hash = `#/session/${session.id}`;
   };
 
   const handleSaveMeetingLink = (e) => {
@@ -526,12 +535,21 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
           <button
             className="btn btn-secondary"
+            onClick={handleLaunchTesterFresh}
+            title="Reset tester profile and open the check-in info form from scratch"
+            style={{ borderColor: '#8b5cf6', color: '#6d28d9', backgroundColor: 'rgba(139, 92, 246, 0.08)' }}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#8b5cf6' }}>person_edit</span>
+            <span>Reset Tester (View Info Place)</span>
+          </button>
+          <button
+            className="btn btn-secondary"
             onClick={handleLaunchTester}
-            title="Open candidate schedule in invisible tester mode"
+            title="Open candidate schedule directly in tester mode"
             style={{ borderColor: '#3b82f6', color: '#1d4ed8', backgroundColor: 'rgba(59, 130, 246, 0.08)' }}
           >
             <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#3b82f6' }}>science</span>
-            <span>Test Flow (Tester Mode)</span>
+            <span>Quick Test Board</span>
           </button>
           <button className="btn btn-secondary" onClick={exportCSV}>
             <span className="material-symbols-outlined">download</span>

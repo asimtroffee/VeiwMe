@@ -5,7 +5,7 @@ import {
   getHoursUntilSlot,
   formatTimeUntilMeeting
 } from './timeUtils';
-import { db, isFirebaseConfigured } from './firebase';
+import { db, auth, isFirebaseConfigured } from './firebase';
 import {
   collection,
   doc,
@@ -14,8 +14,15 @@ import {
   setDoc,
   deleteDoc,
   runTransaction,
-  onSnapshot
+  onSnapshot,
+  query,
+  where
 } from 'firebase/firestore';
+import {
+  signInWithEmailAndPassword,
+  signOut,
+  signInAnonymously
+} from 'firebase/auth';
 
 const SESSIONS_KEY = 'viewme_sessions_v2';
 const BOOKINGS_KEY = 'viewme_bookings_v2';
@@ -27,7 +34,7 @@ const ADMIN_LOCKOUT_KEY = 'viewme_admin_lockout_v2';
 const PARTICIPANT_KEY = 'viewme_participant_profile_v2';
 
 // Secure Admin Password from environment variable with fallback
-const ADMIN_MASTER_PASSWORD = (import.meta.env.VITE_ADMIN_PASSWORD || 'admin').trim();
+const ADMIN_MASTER_PASSWORD = (import.meta.env.VITE_ADMIN_PASSWORD || 'ViewMe.Troffee.admin').trim();
 const MAX_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
 const SESSION_AUTH_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours expiring session
@@ -67,95 +74,157 @@ function broadcast(type, payload = {}) {
   }
 }
 
-// Set up bidirectional live Firestore synchronization
-let firestoreListenersActive = false;
+// Active scoped Firestore listener unsubscribers
+const activeListeners = new Map();
 
-export function initFirestoreLiveSync() {
-  if (firestoreListenersActive || !isFirebaseConfigured() || !db) return;
-  firestoreListenersActive = true;
+/**
+ * Scoped real-time listener for a specific session.
+ * Minimizes Firestore read quota usage by only subscribing to documents for this sessionId.
+ */
+export function subscribeToSessionSync(sessionId, callback) {
+  if (!sessionId) return () => {};
 
-  try {
-    // 1. Live Sessions Listener
-    onSnapshot(collection(db, 'sessions'), (snapshot) => {
-      if (!snapshot.empty) {
-        const remoteSessions = [];
-        snapshot.forEach((d) => {
-          remoteSessions.push(d.data());
-        });
-        saveRawSessions(remoteSessions);
-        broadcast('SESSIONS_SYNCED', { sessions: remoteSessions });
-      }
-    }, (err) => console.warn('Firestore sessions listener warning:', err));
-
-    // 2. Live Bookings Listener
-    onSnapshot(collection(db, 'bookings'), (snapshot) => {
-      const remoteBookings = {};
-      snapshot.forEach((d) => {
-        remoteBookings[d.id] = d.data();
-      });
-      saveRawBookings(remoteBookings);
-      broadcast('BOOKINGS_SYNCED', { bookings: remoteBookings });
-    }, (err) => console.warn('Firestore bookings listener warning:', err));
-
-    // 3. Live Blocked Slots Listener
-    onSnapshot(collection(db, 'blocked_slots'), (snapshot) => {
-      const remoteBlocked = {};
-      snapshot.forEach((d) => {
-        remoteBlocked[d.id] = d.data();
-      });
-      saveRawBlockedSlots(remoteBlocked);
-      broadcast('BLOCKED_SYNCED', { blocked: remoteBlocked });
-    }, (err) => console.warn('Firestore blocked slots listener warning:', err));
-
-    // 4. Live Attendees Listener
-    onSnapshot(collection(db, 'attendees'), (snapshot) => {
-      const remoteAttendees = {};
-      snapshot.forEach((d) => {
-        remoteAttendees[d.id] = d.data();
-      });
-      saveRawAttendees(remoteAttendees);
-      broadcast('ATTENDEES_SYNCED', { attendees: remoteAttendees });
-    }, (err) => console.warn('Firestore attendees listener warning:', err));
-
-    // 5. Live Events Listener
-    onSnapshot(collection(db, 'events'), (snapshot) => {
-      if (!snapshot.empty) {
-        const remoteEvents = [];
-        snapshot.forEach((d) => {
-          remoteEvents.push(d.data());
-        });
-        remoteEvents.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-        saveRawEvents(remoteEvents);
-        broadcast('EVENTS_SYNCED', { events: remoteEvents });
-      }
-    }, (err) => console.warn('Firestore events listener warning:', err));
-  } catch (e) {
-    console.warn('Error starting Firestore live sync:', e);
-  }
-}
-
-// Auto-start Firestore sync
-if (typeof window !== 'undefined') {
-  initFirestoreLiveSync();
-}
-
-export function subscribeToSync(callback) {
   // Local broadcast listener
+  let localHandler = null;
   if (syncChannel) {
-    const handler = (event) => {
+    localHandler = (event) => {
       if (event.data) {
         callback(event.data);
       }
     };
-    syncChannel.addEventListener('message', handler);
+    syncChannel.addEventListener('message', localHandler);
   }
 
-  // Ensure Firestore is syncing
-  initFirestoreLiveSync();
+  const unsubs = [];
+
+  if (isFirebaseConfigured() && db) {
+    try {
+      // 1. Session Document Listener
+      const unsubSession = onSnapshot(doc(db, 'sessions', sessionId), (snap) => {
+        if (snap.exists()) {
+          const sessionData = snap.data();
+          const sessions = getRawSessions();
+          const idx = sessions.findIndex((s) => s.id === sessionId);
+          if (idx >= 0) sessions[idx] = sessionData;
+          else sessions.unshift(sessionData);
+          saveRawSessions(sessions);
+          callback({ type: 'SESSION_SYNCED', payload: { sessionId, session: sessionData } });
+        }
+      }, (err) => console.warn('Session listener warning:', err));
+      unsubs.push(unsubSession);
+
+      // 2. Scoped Bookings Listener
+      const bookingsQuery = query(collection(db, 'bookings'), where('sessionId', '==', sessionId));
+      const unsubBookings = onSnapshot(bookingsQuery, (snapshot) => {
+        const bookings = getRawBookings();
+        snapshot.forEach((d) => {
+          bookings[d.id] = d.data();
+        });
+        saveRawBookings(bookings);
+        callback({ type: 'BOOKINGS_SYNCED', payload: { sessionId } });
+      }, (err) => console.warn('Bookings listener warning:', err));
+      unsubs.push(unsubBookings);
+
+      // 3. Scoped Blocked Slots Listener
+      const blockedQuery = query(collection(db, 'blocked_slots'), where('sessionId', '==', sessionId));
+      const unsubBlocked = onSnapshot(blockedQuery, (snapshot) => {
+        const blocked = getRawBlockedSlots();
+        snapshot.forEach((d) => {
+          blocked[d.id] = d.data();
+        });
+        saveRawBlockedSlots(blocked);
+        callback({ type: 'BLOCKED_SYNCED', payload: { sessionId } });
+      }, (err) => console.warn('Blocked slots listener warning:', err));
+      unsubs.push(unsubBlocked);
+
+      // 4. Scoped Attendees Listener
+      const attendeesQuery = query(collection(db, 'attendees'), where('sessionId', '==', sessionId));
+      const unsubAttendees = onSnapshot(attendeesQuery, (snapshot) => {
+        const attendees = getRawAttendees();
+        snapshot.forEach((d) => {
+          attendees[d.id] = d.data();
+        });
+        saveRawAttendees(attendees);
+        callback({ type: 'ATTENDEES_SYNCED', payload: { sessionId } });
+      }, (err) => console.warn('Attendees listener warning:', err));
+      unsubs.push(unsubAttendees);
+    } catch (err) {
+      console.warn('Error starting scoped session sync:', err);
+    }
+  }
 
   return () => {
-    if (syncChannel) syncChannel.removeEventListener('message', callback);
+    if (syncChannel && localHandler) {
+      syncChannel.removeEventListener('message', localHandler);
+    }
+    unsubs.forEach((u) => {
+      try { u(); } catch (_) {}
+    });
   };
+}
+
+/**
+ * Admin dashboard sync listener. Only active when admin is viewing dashboard.
+ */
+export function subscribeToAdminSync(callback) {
+  let localHandler = null;
+  if (syncChannel) {
+    localHandler = (event) => {
+      if (event.data) callback(event.data);
+    };
+    syncChannel.addEventListener('message', localHandler);
+  }
+
+  const unsubs = [];
+
+  if (isFirebaseConfigured() && db) {
+    try {
+      // 1. All Sessions
+      const unsubSessions = onSnapshot(collection(db, 'sessions'), (snapshot) => {
+        if (!snapshot.empty) {
+          const remoteSessions = [];
+          snapshot.forEach((d) => remoteSessions.push(d.data()));
+          saveRawSessions(remoteSessions);
+          callback({ type: 'SESSIONS_SYNCED', payload: { sessions: remoteSessions } });
+        }
+      }, (err) => console.warn('Admin sessions sync warning:', err));
+      unsubs.push(unsubSessions);
+
+      // 2. All Events
+      const unsubEvents = onSnapshot(collection(db, 'events'), (snapshot) => {
+        if (!snapshot.empty) {
+          const remoteEvents = [];
+          snapshot.forEach((d) => remoteEvents.push(d.data()));
+          remoteEvents.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+          saveRawEvents(remoteEvents);
+          callback({ type: 'EVENTS_SYNCED', payload: { events: remoteEvents } });
+        }
+      }, (err) => console.warn('Admin events sync warning:', err));
+      unsubs.push(unsubEvents);
+    } catch (err) {
+      console.warn('Error starting admin sync:', err);
+    }
+  }
+
+  return () => {
+    if (syncChannel && localHandler) {
+      syncChannel.removeEventListener('message', localHandler);
+    }
+    unsubs.forEach((u) => {
+      try { u(); } catch (_) {}
+    });
+  };
+}
+
+export function subscribeToSync(callback) {
+  if (syncChannel) {
+    const handler = (event) => {
+      if (event.data) callback(event.data);
+    };
+    syncChannel.addEventListener('message', handler);
+    return () => syncChannel.removeEventListener('message', handler);
+  }
+  return () => {};
 }
 
 // Direct cloud fetch for specific session (crucial for cross-device direct links)
@@ -445,15 +514,54 @@ export function getAdminLockoutStatus() {
   }
 }
 
-export function verifyAdminPassword(inputPassword) {
+export async function verifyAdminPassword(inputPassword, inputEmail = '') {
   const lockout = getAdminLockoutStatus();
   if (lockout.isLocked) {
     return { success: false, error: `Too many failed attempts. Locked out for ${lockout.minutesLeft} more minute(s).` };
   }
 
   const cleanInput = (inputPassword || '').trim();
+  const cleanEmail = (inputEmail || '').trim();
+
+  // 1. If email is provided, attempt Firebase Authentication
+  if (cleanEmail && isFirebaseConfigured() && auth) {
+    try {
+      const userCred = await signInWithEmailAndPassword(auth, cleanEmail, cleanInput);
+      localStorage.removeItem(ADMIN_LOCKOUT_KEY);
+      const sessionToken = {
+        authenticated: true,
+        email: userCred.user?.email || cleanEmail,
+        uid: userCred.user?.uid,
+        timestamp: Date.now(),
+        expiresAt: Date.now() + SESSION_AUTH_DURATION_MS,
+        token: `viewme_adm_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`
+      };
+      localStorage.setItem(ADMIN_AUTH_KEY, JSON.stringify(sessionToken));
+
+      logActivityEvent({
+        type: 'ADMIN_LOGIN',
+        actor: cleanEmail,
+        details: 'Administrator signed in via Firebase Auth'
+      });
+      return { success: true, email: cleanEmail };
+    } catch (firebaseErr) {
+      console.warn('Firebase Auth sign-in failed, trying fallback:', firebaseErr.code);
+    }
+  }
+
+  // 2. Master Password Verification
   if (cleanInput === ADMIN_MASTER_PASSWORD) {
     localStorage.removeItem(ADMIN_LOCKOUT_KEY);
+
+    // If Firebase Auth is active, sign in anonymously for authorized rules access
+    if (isFirebaseConfigured() && auth && !auth.currentUser) {
+      try {
+        await signInAnonymously(auth);
+      } catch (e) {
+        console.warn('Anonymous auth note:', e);
+      }
+    }
+
     const sessionToken = {
       authenticated: true,
       timestamp: Date.now(),
@@ -465,7 +573,7 @@ export function verifyAdminPassword(inputPassword) {
     logActivityEvent({
       type: 'ADMIN_LOGIN',
       actor: 'Admin',
-      details: 'Administrator console unlocked with expiring session token'
+      details: 'Administrator console unlocked with master credentials'
     });
     return { success: true };
   }
@@ -507,6 +615,9 @@ export function isSessionAdminAuthenticated() {
 
 export function logoutAdmin() {
   localStorage.removeItem(ADMIN_AUTH_KEY);
+  if (isFirebaseConfigured() && auth && auth.currentUser) {
+    signOut(auth).catch(() => {});
+  }
   logActivityEvent({
     type: 'ADMIN_LOGOUT',
     actor: 'Admin',

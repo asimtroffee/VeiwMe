@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import {
   isSessionAdminAuthenticated,
   getAllSessions,
@@ -6,19 +6,59 @@ import {
   fetchRemoteSession,
   getParticipantProfile,
   clearParticipantProfile,
+  subscribeToSessionSync,
+  subscribeToAdminSync,
   subscribeToSync
 } from './services/storage';
-import AdminDashboard from './components/admin/AdminDashboard';
-import AdminAuthModal from './components/admin/AdminAuthModal';
-import ParticipantGate from './components/participant/ParticipantGate';
-import ParticipantBoard from './components/participant/ParticipantBoard';
 import Toast from './components/common/Toast';
 import { formatDateDisplay } from './services/timeUtils';
+
+// Code-split components to reduce initial bundle size for candidates
+const AdminDashboard = lazy(() => import('./components/admin/AdminDashboard'));
+const AdminAuthModal = lazy(() => import('./components/admin/AdminAuthModal'));
+const ParticipantGate = lazy(() => import('./components/participant/ParticipantGate'));
+const ParticipantBoard = lazy(() => import('./components/participant/ParticipantBoard'));
+
+function PageLoader({ text = 'Loading...' }) {
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '24px',
+        backgroundColor: 'var(--color-background)',
+        gap: '16px'
+      }}
+    >
+      <div
+        style={{
+          width: '44px',
+          height: '44px',
+          border: '4px solid var(--color-surface-container-high)',
+          borderTop: '4px solid var(--color-primary)',
+          borderRadius: '50%',
+          animation: 'spin 0.8s linear infinite'
+        }}
+      />
+      <style>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `}</style>
+      <p className="body-md" style={{ color: 'var(--color-secondary)' }}>
+        {text}
+      </p>
+    </div>
+  );
+}
 
 export default function App() {
   const [currentHash, setCurrentHash] = useState(window.location.hash || '#/');
   const [isAdminAuth, setIsAdminAuth] = useState(isSessionAdminAuthenticated());
-  const [showAdminAuthModal, setShowAdminAuthModal] = useState(false);
   const [toast, setToast] = useState({ message: '', type: 'success' });
   const [participantProfiles, setParticipantProfiles] = useState({});
   const [currentSession, setCurrentSession] = useState(null);
@@ -52,10 +92,12 @@ export default function App() {
       setIsLoadingSession(true);
     }
 
-    // Always fetch remote Firestore data to ensure freshness on every device
+    // Fetch remote Firestore data to ensure freshness on every device
     try {
       const remote = await fetchRemoteSession(targetSessionId);
-      setCurrentSession(remote);
+      if (remote) {
+        setCurrentSession(remote);
+      }
     } catch (err) {
       console.warn('Error fetching remote session:', err);
     } finally {
@@ -75,19 +117,32 @@ export default function App() {
     }
   }, [currentHash, isSessionRoute, sessionId]);
 
-  // Listen to live updates across tabs & Firestore
+  // Scoped Firestore synchronization: only listen to relevant data based on active route
   useEffect(() => {
-    const unsubscribe = subscribeToSync((eventData) => {
-      setIsAdminAuth(isSessionAdminAuthenticated());
-      if (sessionId) {
+    let unsubscribe = () => {};
+
+    if (isSessionRoute && sessionId) {
+      // Listen ONLY to active session documents (saves ~90% Firestore read quotas)
+      unsubscribe = subscribeToSessionSync(sessionId, () => {
         const fresh = getSessionDetails(sessionId);
         if (fresh) {
           setCurrentSession(fresh);
         }
-      }
-    });
+      });
+    } else if (isAdminRoute) {
+      // Listen to admin-level session updates
+      unsubscribe = subscribeToAdminSync(() => {
+        setIsAdminAuth(isSessionAdminAuthenticated());
+      });
+    } else {
+      // General broadcast sync
+      unsubscribe = subscribeToSync(() => {
+        setIsAdminAuth(isSessionAdminAuthenticated());
+      });
+    }
+
     return () => unsubscribe();
-  }, [sessionId]);
+  }, [isSessionRoute, sessionId, isAdminRoute]);
 
   const showToast = (message, type = 'success') => {
     setToast({ message, type });
@@ -98,40 +153,7 @@ export default function App() {
   // -------------------------------------------------------------
   if (isSessionRoute && sessionId) {
     if (isLoadingSession && !currentSession) {
-      return (
-        <div
-          style={{
-            minHeight: '100vh',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '24px',
-            backgroundColor: 'var(--color-background)',
-            gap: '16px'
-          }}
-        >
-          <div
-            style={{
-              width: '44px',
-              height: '44px',
-              border: '4px solid var(--color-surface-container-high)',
-              borderTop: '4px solid var(--color-primary)',
-              borderRadius: '50%',
-              animation: 'spin 0.8s linear infinite'
-            }}
-          />
-          <style>{`
-            @keyframes spin {
-              0% { transform: rotate(0deg); }
-              100% { transform: rotate(360deg); }
-            }
-          `}</style>
-          <p className="body-md" style={{ color: 'var(--color-secondary)' }}>
-            Connecting to interview session...
-          </p>
-        </div>
-      );
+      return <PageLoader text="Connecting to interview session..." />;
     }
 
     if (!currentSession && sessionFetchAttempted) {
@@ -188,16 +210,18 @@ export default function App() {
 
     if (!currentProfile) {
       return (
-        <div>
-          <ParticipantGate
-            session={currentSession}
-            onGatePassed={(profile) => {
-              setParticipantProfiles((prev) => ({ ...prev, [sessionId]: profile }));
-              showToast(`Welcome, ${profile.name}!`);
-            }}
-          />
-          <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
-        </div>
+        <Suspense fallback={<PageLoader text="Loading session check-in..." />}>
+          <div>
+            <ParticipantGate
+              session={currentSession}
+              onGatePassed={(profile) => {
+                setParticipantProfiles((prev) => ({ ...prev, [sessionId]: profile }));
+                showToast(`Welcome, ${profile.name}!`);
+              }}
+            />
+            <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
+          </div>
+        </Suspense>
       );
     }
 
@@ -208,16 +232,28 @@ export default function App() {
       }));
     };
 
+    const handleResetParticipantProfile = () => {
+      clearParticipantProfile(sessionId);
+      setParticipantProfiles((prev) => {
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+    };
+
     return (
-      <div>
-        <ParticipantBoard
-          session={currentSession}
-          participantProfile={currentProfile}
-          onUpdateProfile={handleUpdateParticipantProfile}
-          onShowToast={showToast}
-        />
-        <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
-      </div>
+      <Suspense fallback={<PageLoader text="Loading schedule board..." />}>
+        <div>
+          <ParticipantBoard
+            session={currentSession}
+            participantProfile={currentProfile}
+            onUpdateProfile={handleUpdateParticipantProfile}
+            onResetProfile={handleResetParticipantProfile}
+            onShowToast={showToast}
+          />
+          <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
+        </div>
+      </Suspense>
     );
   }
 
@@ -227,33 +263,37 @@ export default function App() {
   if (isAdminRoute) {
     if (!isAdminAuth) {
       return (
-        <div style={{ minHeight: '100vh', backgroundColor: 'var(--color-background)' }}>
-          <AdminAuthModal
-            isOpen={true}
-            onSuccess={() => {
-              setIsAdminAuth(true);
-              showToast('Admin console unlocked!');
-            }}
-            onCancel={() => {
-              window.location.hash = '#/';
-            }}
-          />
-          <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
-        </div>
+        <Suspense fallback={<PageLoader text="Loading authentication..." />}>
+          <div style={{ minHeight: '100vh', backgroundColor: 'var(--color-background)' }}>
+            <AdminAuthModal
+              isOpen={true}
+              onSuccess={() => {
+                setIsAdminAuth(true);
+                showToast('Admin console unlocked!');
+              }}
+              onCancel={() => {
+                window.location.hash = '#/';
+              }}
+            />
+            <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
+          </div>
+        </Suspense>
       );
     }
 
     return (
-      <div>
-        <AdminDashboard
-          onLogout={() => {
-            setIsAdminAuth(false);
-            showToast('Admin logged out successfully.');
-          }}
-          onShowToast={showToast}
-        />
-        <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
-      </div>
+      <Suspense fallback={<PageLoader text="Loading admin console..." />}>
+        <div>
+          <AdminDashboard
+            onLogout={() => {
+              setIsAdminAuth(false);
+              showToast('Admin logged out successfully.');
+            }}
+            onShowToast={showToast}
+          />
+          <Toast message={toast.message} type={toast.type} onClose={() => setToast({ message: '', type: 'success' })} />
+        </div>
+      </Suspense>
     );
   }
 

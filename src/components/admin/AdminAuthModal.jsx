@@ -2,8 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { verifyAdminPassword, getAdminLockoutStatus } from '../../services/storage';
 
 export default function AdminAuthModal({ isOpen, onSuccess, onCancel }) {
+  const [authMode, setAuthMode] = useState('password'); // 'password' or 'email'
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [lockoutStatus, setLockoutStatus] = useState(getAdminLockoutStatus());
 
@@ -18,24 +21,32 @@ export default function AdminAuthModal({ isOpen, onSuccess, onCancel }) {
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg('');
+    setIsSubmitting(true);
 
-    const res = verifyAdminPassword(password);
-    if (res.success) {
-      setPassword('');
-      onSuccess();
-    } else {
-      setErrorMsg(res.error);
-      setLockoutStatus(getAdminLockoutStatus());
+    try {
+      const res = await verifyAdminPassword(password, authMode === 'email' ? email : '');
+      if (res.success) {
+        setPassword('');
+        setEmail('');
+        onSuccess();
+      } else {
+        setErrorMsg(res.error || 'Invalid credentials.');
+        setLockoutStatus(getAdminLockoutStatus());
+      }
+    } catch (err) {
+      setErrorMsg(err.message || 'Authentication error.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   return (
     <div className="modal-overlay">
       <div className="modal-content" style={{ maxWidth: '440px' }}>
-        <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '20px' }}>
           <div
             style={{
               width: '54px',
@@ -57,8 +68,55 @@ export default function AdminAuthModal({ isOpen, onSuccess, onCancel }) {
             Admin Access Required
           </h2>
           <p className="body-sm" style={{ color: 'var(--color-on-surface-variant)' }}>
-            Enter the master administrator password to view and manage sessions.
+            Enter your administrator credentials to view and manage sessions.
           </p>
+        </div>
+
+        {/* Tab switch between Master Key and Firebase Email */}
+        <div
+          style={{
+            display: 'flex',
+            backgroundColor: 'var(--color-surface-container)',
+            borderRadius: 'var(--radius-md)',
+            padding: '4px',
+            marginBottom: '20px',
+            gap: '4px'
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setAuthMode('password')}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              fontSize: '13px',
+              fontWeight: authMode === 'password' ? '600' : '400',
+              borderRadius: 'var(--radius-sm)',
+              backgroundColor: authMode === 'password' ? 'var(--color-surface)' : 'transparent',
+              color: authMode === 'password' ? 'var(--color-primary)' : 'var(--color-on-surface-variant)',
+              boxShadow: authMode === 'password' ? 'var(--shadow-sm)' : 'none',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            Admin Key / PIN
+          </button>
+          <button
+            type="button"
+            onClick={() => setAuthMode('email')}
+            style={{
+              flex: 1,
+              padding: '8px 12px',
+              fontSize: '13px',
+              fontWeight: authMode === 'email' ? '600' : '400',
+              borderRadius: 'var(--radius-sm)',
+              backgroundColor: authMode === 'email' ? 'var(--color-surface)' : 'transparent',
+              color: authMode === 'email' ? 'var(--color-primary)' : 'var(--color-on-surface-variant)',
+              boxShadow: authMode === 'email' ? 'var(--shadow-sm)' : 'none',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            Firebase Auth (Email)
+          </button>
         </div>
 
         {lockoutStatus.isLocked ? (
@@ -82,19 +140,37 @@ export default function AdminAuthModal({ isOpen, onSuccess, onCancel }) {
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
+            {authMode === 'email' && (
+              <div style={{ marginBottom: '16px' }}>
+                <label className="input-label" htmlFor="admin-email">
+                  Admin Email
+                </label>
+                <input
+                  id="admin-email"
+                  type="email"
+                  className="input-field"
+                  placeholder="admin@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoFocus
+                  required
+                />
+              </div>
+            )}
+
             <div style={{ marginBottom: '18px' }}>
               <label className="input-label" htmlFor="admin-pass">
-                Password
+                {authMode === 'email' ? 'Password' : 'Admin Password / Key'}
               </label>
               <div style={{ position: 'relative' }}>
                 <input
                   id="admin-pass"
                   type={showPassword ? 'text' : 'password'}
                   className="input-field"
-                  placeholder="Enter admin password"
+                  placeholder={authMode === 'email' ? 'Enter account password' : 'Enter admin password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  autoFocus
+                  autoFocus={authMode === 'password'}
                   required
                   style={{ paddingRight: '42px' }}
                 />
@@ -123,7 +199,7 @@ export default function AdminAuthModal({ isOpen, onSuccess, onCancel }) {
                   color: 'var(--color-on-surface-variant)'
                 }}
               >
-                <span>Default: <code style={{ backgroundColor: 'var(--color-surface-container)', padding: '2px 4px', borderRadius: '4px' }}>admin</code></span>
+                <span>Master credentials configured</span>
                 <span>{lockoutStatus.remainingAttempts} attempts remaining</span>
               </div>
             </div>
@@ -151,12 +227,12 @@ export default function AdminAuthModal({ isOpen, onSuccess, onCancel }) {
 
             <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
               {onCancel && (
-                <button type="button" className="btn btn-secondary" onClick={onCancel} style={{ flex: 1 }}>
+                <button type="button" className="btn btn-secondary" onClick={onCancel} style={{ flex: 1 }} disabled={isSubmitting}>
                   Cancel
                 </button>
               )}
-              <button type="submit" className="btn btn-primary" style={{ flex: 2 }}>
-                Unlock Dashboard
+              <button type="submit" className="btn btn-primary" style={{ flex: 2 }} disabled={isSubmitting}>
+                {isSubmitting ? 'Authenticating...' : 'Unlock Dashboard'}
               </button>
             </div>
           </form>

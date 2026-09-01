@@ -9,6 +9,7 @@ import {
   isTesterAccount,
   resetTesterSessionState,
   resetTesterSlotChangeLimit,
+  clearParticipantProfile,
   subscribeToSync
 } from '../../services/storage';
 import {
@@ -22,7 +23,7 @@ import {
 } from '../../services/timeUtils';
 import ConfirmModal from '../common/ConfirmModal';
 
-export default function ParticipantBoard({ session: initialSession, participantProfile, onUpdateProfile, onShowToast }) {
+export default function ParticipantBoard({ session: initialSession, participantProfile, onUpdateProfile, onResetProfile, onShowToast }) {
   const [session, setSession] = useState(initialSession);
   const [filterPeriod, setFilterPeriod] = useState('all'); // all | morning | afternoon | evening | open
   const [layoutMode, setLayoutMode] = useState('stream'); // 'stream' (vertical timeline scroll) | 'grid'
@@ -274,9 +275,21 @@ export default function ParticipantBoard({ session: initialSession, participantP
     loadData();
   };
 
+  const handleResetAccountAndGoToGate = async () => {
+    await resetTesterSessionState(session.id, participantProfile.email || participantProfile.contact);
+    clearParticipantProfile(session.id);
+    if (onResetProfile) {
+      onResetProfile();
+    } else if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
+  };
+
   const handleExitTesterMode = () => {
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem(`viewme_participant_${session.id}`);
+    clearParticipantProfile(session.id);
+    if (onResetProfile) {
+      onResetProfile();
+    } else if (typeof window !== 'undefined') {
       window.location.reload();
     }
   };
@@ -2032,6 +2045,30 @@ export default function ParticipantBoard({ session: initialSession, participantP
                     ))}
                   </div>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={handleResetAccountAndGoToGate}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    backgroundColor: '#8b5cf6',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    marginTop: '4px'
+                  }}
+                  title="Wipe tester booking and return to the candidate info / check-in screen"
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>person_edit</span>
+                  <span>Reset Account (View Info Place)</span>
+                </button>
 
                 <button
                   type="button"

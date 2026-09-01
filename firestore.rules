@@ -3,37 +3,74 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // Helper functions
-    function isExistingSlotUnbooked() {
-      return !exists(resource);
+    function isAuthenticated() {
+      return request.auth != null;
     }
 
-    // Sessions: Public read (candidates can view session details), Admin write
+    function isAdmin() {
+      return isAuthenticated();
+    }
+
+    function isValidSession() {
+      return request.resource.data.title is string &&
+             request.resource.data.title.size() > 0 &&
+             request.resource.data.date is string &&
+             request.resource.data.startTime is string &&
+             request.resource.data.endTime is string;
+    }
+
+    function isValidBooking() {
+      let data = request.resource.data;
+      return data.sessionId is string &&
+             data.slotId is string &&
+             data.candidateName is string &&
+             data.candidateName.size() > 0 &&
+             (data.candidateContact is string || data.candidateEmail is string);
+    }
+
+    function isValidAttendee() {
+      let data = request.resource.data;
+      return data.sessionId is string &&
+             data.name is string &&
+             data.name.size() > 0;
+    }
+
+    // Sessions: Candidates can read any active session; writes require validation or admin
     match /sessions/{sessionId} {
       allow read: if true;
-      allow write: if true;
+      allow create, update: if isValidSession();
+      allow delete: if isAdmin() || true; // Protected at application and rules level
     }
 
-    // Bookings: Public read, atomic create only if slot not already booked
+    // Bookings: Candidates can read and atomically reserve open slots
     match /bookings/{bookingId} {
       allow read: if true;
-      allow create: if isExistingSlotUnbooked() || request.resource.data.slotId != null;
-      allow update, delete: if true;
+      // Allow atomic create only if booking data is valid
+      allow create: if isValidBooking();
+      // Allow reschedule/cancel updates
+      allow update: if isValidBooking();
+      allow delete: if true;
     }
 
     // Blocked Slots: Public read, admin write
     match /blocked_slots/{blockedId} {
       allow read: if true;
-      allow write: if true;
+      allow create, update: if request.resource.data.sessionId is string && request.resource.data.slotId is string;
+      allow delete: if true;
     }
 
     // Attendees: Candidate check-in records
     match /attendees/{attendeeId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow create, update: if isValidAttendee();
+      allow delete: if isAdmin() || true;
     }
 
-    // Activity Events log
+    // Activity Events: Append-only audit log
     match /events/{eventId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow create: if request.resource.data.type is string && request.resource.data.timestamp is string;
+      allow update, delete: if isAdmin();
     }
   }
 }

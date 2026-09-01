@@ -7,5 +7,15 @@ export default defineConfig({
   server: {
     port: 3000,
     open: false
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-firebase': ['firebase/app', 'firebase/firestore', 'firebase/auth']
+        }
+      }
+    }
   }
 });

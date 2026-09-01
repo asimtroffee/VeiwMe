@@ -1,5 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 
 // Read config from Vite environment variables or fallback to project configuration
 const DEFAULT_FIREBASE_CONFIG = {
@@ -22,6 +23,7 @@ const firebaseConfig = {
 
 let app = null;
 let db = null;
+let auth = null;
 
 export function isFirebaseConfigured() {
   return Boolean(
@@ -35,10 +37,11 @@ if (isFirebaseConfigured()) {
   try {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
     db = getFirestore(app);
-    console.log('✅ Firebase Firestore successfully initialized');
+    auth = getAuth(app);
+    console.log('✅ Firebase Firestore & Auth successfully initialized');
   } catch (error) {
     console.error('❌ Error initializing Firebase:', error);
   }
 }
 
-export { app, db, firebaseConfig };
+export { app, db, auth, firebaseConfig };
