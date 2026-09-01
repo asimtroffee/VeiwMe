@@ -77,15 +77,6 @@ export default function ParticipantGate({ session, onGatePassed }) {
     }
   };
 
-  const handleFillTester = (e) => {
-    if (e) e.preventDefault();
-    setName('Admin QA Tester');
-    setCategory(sessionCategories[0] || 'Category A');
-    setEmail('tester@viewme.internal');
-    setPhone('+1 555-000-TEST');
-    setError('');
-  };
-
   return (
     <div
       style={{
@@ -313,25 +304,6 @@ export default function ParticipantGate({ session, onGatePassed }) {
             <span>{isSubmitting ? 'Recording Check-in...' : 'Check In & View Slots'}</span>
             <span className="material-symbols-outlined">arrow_forward</span>
           </button>
-
-          {/* Quick Invisible Tester Fill Shortcut */}
-          <div style={{ marginTop: '16px', textAlign: 'center' }}>
-            <button
-              type="button"
-              onClick={handleFillTester}
-              style={{
-                fontSize: '11px',
-                color: 'var(--color-secondary)',
-                textDecoration: 'underline',
-                cursor: 'pointer',
-                background: 'none',
-                border: 'none',
-                opacity: 0.75
-              }}
-            >
-              🧪 Quick-Fill as Invisible Admin Tester
-            </button>
-          </div>
         </form>
       </div>
     </div>
