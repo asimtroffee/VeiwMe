@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { recordSessionAttendee, isTesterAccount } from '../../services/storage';
-import { formatDateDisplay } from '../../services/timeUtils';
+import { formatDateDisplay, formatCategoryName, resolveCategoryInSession } from '../../services/timeUtils';
 
 export default function ParticipantGate({ session, onGatePassed }) {
   const sessionCategories = session?.categories && session.categories.length > 0
@@ -23,7 +23,7 @@ export default function ParticipantGate({ session, onGatePassed }) {
     setError('');
 
     const trimmedName = name.trim();
-    const trimmedCategory = category;
+    const trimmedCategory = resolveCategoryInSession(sessionCategories, category);
     const trimmedEmail = email.trim();
     const trimmedPhone = phone.trim();
 
@@ -233,7 +233,7 @@ export default function ParticipantGate({ session, onGatePassed }) {
             >
               {sessionCategories.map((cat) => (
                 <option key={cat} value={cat}>
-                  {cat.startsWith('Category') ? cat : `Category ${cat}`}
+                  {formatCategoryName(cat)}
                 </option>
               ))}
             </select>

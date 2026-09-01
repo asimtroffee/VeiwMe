@@ -10,7 +10,7 @@ import {
   resetTesterSessionState,
   resetTesterSlotChangeLimit,
   clearParticipantProfile,
-  subscribeToSync
+  subscribeToSessionSync
 } from '../../services/storage';
 import {
   formatDateDisplay,
@@ -19,7 +19,9 @@ import {
   isSlotWithinCutoff,
   generateGoogleCalendarUrl,
   openGoogleCalendarDirectly,
-  downloadIcsFile
+  downloadIcsFile,
+  formatCategoryName,
+  matchCategory
 } from '../../services/timeUtils';
 import ConfirmModal from '../common/ConfirmModal';
 
@@ -68,7 +70,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
 
   useEffect(() => {
     loadData();
-    const unsubscribe = subscribeToSync(() => {
+    const unsubscribe = subscribeToSessionSync(session.id, () => {
       loadData();
     });
     return () => unsubscribe();
@@ -78,21 +80,24 @@ export default function ParticipantBoard({ session: initialSession, participantP
   const myBooking = useMemo(() => {
     const candidateSlots = session?.allSlots || session?.slots;
     if (!session || !candidateSlots || !participantProfile) return null;
-    const pEmail = (participantProfile.email || '').toLowerCase();
-    const pContact = (participantProfile.contact || '').toLowerCase();
-    const pName = (participantProfile.name || '').toLowerCase();
+    const pEmail = (participantProfile.email || '').toLowerCase().trim();
+    const pPhone = (participantProfile.phone || '').replace(/\D/g, '');
+    const pContact = (participantProfile.contact || '').toLowerCase().trim();
+    const pName = (participantProfile.name || '').toLowerCase().trim();
 
     return candidateSlots.find((slot) => {
       if (!slot.isBooked || !slot.booking) return false;
-      const bEmail = (slot.booking.candidateEmail || '').toLowerCase();
-      const bContact = (slot.booking.candidateContact || '').toLowerCase();
-      const bName = (slot.booking.candidateName || '').toLowerCase();
+      const bEmail = (slot.booking.candidateEmail || '').toLowerCase().trim();
+      const bPhone = (slot.booking.candidatePhone || '').replace(/\D/g, '');
+      const bContact = (slot.booking.candidateContact || '').toLowerCase().trim();
+      const bName = (slot.booking.candidateName || '').toLowerCase().trim();
 
-      return (
-        (pEmail && bEmail && pEmail === bEmail) ||
-        (pContact && bContact && pContact === bContact) ||
-        (pName && bName && pName === bName)
-      );
+      const isSameEmail = pEmail && bEmail && pEmail === bEmail;
+      const isSamePhone = pPhone && pPhone.length >= 7 && bPhone && (pPhone === bPhone || pPhone.endsWith(bPhone) || bPhone.endsWith(pPhone));
+      const isSameContact = pContact && bContact && pContact === bContact;
+      const isSameName = pName && bName && pName === bName;
+
+      return isSameEmail || isSamePhone || isSameContact || (isSameName && (pEmail || pPhone));
     });
   }, [session, participantProfile]);
 
@@ -113,7 +118,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
     });
   }, [session, filterPeriod]);
 
-  // Grouped periods for smooth scroll and timeline sections
+  // Grouped periods for smooth stream timeline
   const morningSlots = useMemo(() => {
     return (filteredSlots || []).filter((s) => s.period === 'morning');
   }, [filteredSlots]);
@@ -146,11 +151,11 @@ export default function ParticipantBoard({ session: initialSession, participantP
   };
 
   const handleOpenBookingModal = (slot) => {
+    if (slot.isBooked || slot.isBlocked) return;
+
     if (myBooking) {
-      if (myBooking.id === slot.id) {
-        return;
-      }
-      // Check if eligible to change slot (1-change limit and 3-hour cutoff)
+      if (myBooking.id === slot.id) return;
+
       const eligibility = checkSlotChangeEligibility(session.id, myBooking.id, participantProfile);
       if (!eligibility.canChange) {
         setIneligibilityModal({
@@ -173,8 +178,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
     setSelectedSlotForBooking(slot);
   };
 
-  const handleConfirmBooking = async (e) => {
-    e.preventDefault();
+  const handleConfirmBooking = async () => {
     if (!selectedSlotForBooking || isSubmitting) return;
 
     setIsSubmitting(true);
@@ -182,7 +186,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
 
     const res = await bookSlot(session.id, selectedSlotForBooking.id, {
       candidateName: participantProfile.name,
-      candidateCategory: participantProfile.category || 'A',
+      candidateCategory: participantProfile.category || 'Category A',
       candidateEmail: participantProfile.email || '',
       candidatePhone: participantProfile.phone || '',
       candidateContact: participantProfile.contact || (participantProfile.email && participantProfile.phone ? `${participantProfile.email} • ${participantProfile.phone}` : participantProfile.email || participantProfile.phone || participantProfile.name)
@@ -258,7 +262,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
   const handleResetChangeLimit = () => {
     const res = resetTesterSlotChangeLimit(session.id, participantProfile.email || participantProfile.contact);
     if (res.success) {
-      onShowToast('🧪 Slot change limit reset! (1/1 changes available).');
+      onShowToast('🧪 Slot change limit reset to 0/1.');
       loadData();
     }
   };
@@ -299,44 +303,35 @@ export default function ParticipantBoard({ session: initialSession, participantP
   const isValidPhone = (str) => /^[\+]?[(]?[0-9]{3}[)]?[-\s\.]?[0-9]{3}[-\s\.]?[0-9]{4,6}$/.test(str.replace(/\s+/g, '')) || str.replace(/\D/g, '').length >= 10;
 
   const handleOpenEditInfo = () => {
-    if (!canEdit) {
-      onShowToast('You have reached the maximum limit of 2 edits.', 'error');
-      return;
-    }
-    setEditName(participantProfile?.name || '');
-    setEditCategory(participantProfile?.category || 'A');
-    setEditEmail(participantProfile?.email || '');
-    setEditPhone(participantProfile?.phone || '');
+    setEditName(participantProfile.name || '');
+    setEditCategory(participantProfile.category || 'Category A');
+    setEditEmail(participantProfile.email || '');
+    setEditPhone(participantProfile.phone || '');
     setEditError('');
     setIsEditingInfo(true);
   };
 
-  const handleSaveEditInfo = (e) => {
+  const handleSaveEditInfo = async (e) => {
     e.preventDefault();
     setEditError('');
 
-    if (!canEdit) {
-      setEditError('You cannot edit your information more than two times.');
+    if (editCount >= 2) {
+      setEditError('You have already used your 2 information edits.');
       return;
     }
 
     const trimmedName = editName.trim();
-    const trimmedCategory = editCategory;
+    const trimmedCategory = editCategory.trim();
     const trimmedEmail = editEmail.trim();
     const trimmedPhone = editPhone.trim();
 
-    if (!trimmedName || trimmedName.length < 2) {
-      setEditError('Please enter your full name.');
+    if (!trimmedName || !trimmedEmail || !trimmedPhone) {
+      setEditError('Please fill in all required fields.');
       return;
     }
 
-    if (!trimmedCategory) {
-      setEditError('Please select a Category (A, B, or C).');
-      return;
-    }
-
-    if (!trimmedEmail || !isValidEmail(trimmedEmail)) {
-      setEditError('Please enter a valid email address (e.g. name@example.com).');
+    if (!isValidEmail(trimmedEmail)) {
+      setEditError('Please enter a valid email address.');
       return;
     }
 
@@ -371,12 +366,23 @@ export default function ParticipantBoard({ session: initialSession, participantP
   };
 
   const renderStreamSlotRow = (slot) => {
+    const pEmail = (participantProfile.email || '').toLowerCase().trim();
+    const pPhone = (participantProfile.phone || '').replace(/\D/g, '');
+    const pContact = (participantProfile.contact || '').toLowerCase().trim();
+    const pName = (participantProfile.name || '').toLowerCase().trim();
+
+    const bEmail = (slot.booking?.candidateEmail || '').toLowerCase().trim();
+    const bPhone = (slot.booking?.candidatePhone || '').replace(/\D/g, '');
+    const bContact = (slot.booking?.candidateContact || '').toLowerCase().trim();
+    const bName = (slot.booking?.candidateName || '').toLowerCase().trim();
+
     const isMine =
       slot.isBooked &&
       (
-        (participantProfile.email && slot.booking.candidateEmail && slot.booking.candidateEmail.toLowerCase() === participantProfile.email.toLowerCase()) ||
-        slot.booking.candidateContact.toLowerCase() === (participantProfile.contact || '').toLowerCase() ||
-        slot.booking.candidateName.toLowerCase() === participantProfile.name.toLowerCase()
+        (pEmail && bEmail && pEmail === bEmail) ||
+        (pPhone && pPhone.length >= 7 && bPhone && (pPhone === bPhone || pPhone.endsWith(bPhone) || bPhone.endsWith(pPhone))) ||
+        (pContact && bContact && pContact === bContact) ||
+        (pName && bName && pName === bName)
       );
 
     if (slot.isBooked) {
@@ -397,7 +403,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
                 </span>
                 {isMine && (
                   <span className="chip chip-accent" style={{ fontSize: '10px', padding: '1px 6px' }}>
-                    Cat {participantProfile.category || slot.booking?.candidateCategory || 'A'}
+                    {formatCategoryName(participantProfile.category || slot.booking?.candidateCategory || 'Category A')}
                   </span>
                 )}
               </div>
@@ -1831,7 +1837,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
                 >
                   {(session?.categories || ['Category A', 'Category B', 'Category C']).map((cat) => (
                     <option key={cat} value={cat}>
-                      {cat.startsWith('Category') ? cat : `Category ${cat}`}
+                      {formatCategoryName(cat)}
                     </option>
                   ))}
                 </select>

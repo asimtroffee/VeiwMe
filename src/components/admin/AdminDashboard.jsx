@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { getAllSessions, deleteSession, logoutAdmin, subscribeToSync } from '../../services/storage';
+import {
+  getAllSessions,
+  deleteSession,
+  logoutAdmin,
+  subscribeToAdminSync,
+  fetchAllRemoteAdminData
+} from '../../services/storage';
 import { formatDateDisplay, getRelativeDateBadge } from '../../services/timeUtils';
 import CreateSessionModal from './CreateSessionModal';
 import SessionDetailView from './SessionDetailView';
@@ -23,7 +29,11 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
 
   useEffect(() => {
     loadSessions();
-    const unsubscribe = subscribeToSync(() => {
+    fetchAllRemoteAdminData().then(() => {
+      loadSessions();
+    });
+
+    const unsubscribe = subscribeToAdminSync(() => {
       loadSessions();
     });
     return () => unsubscribe();

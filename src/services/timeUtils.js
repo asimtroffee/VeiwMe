@@ -30,6 +30,126 @@ export function getSlotPeriod(startMinutes) {
 }
 
 /**
+ * Get canonical slug for category (e.g. "Category A", "Cat A", "A" -> "cat_a")
+ */
+export function getCanonicalCategorySlug(category) {
+  if (!category) return '';
+  const str = String(category).trim().toLowerCase();
+  if (!str) return '';
+  
+  // Standard single letters A, B, C, D, etc. or "category A" / "cat A"
+  const singleLetterMatch = str.match(/^(?:category|cat)?\s*([a-z0-9]+)$/i);
+  if (singleLetterMatch) {
+    return `cat_${singleLetterMatch[1].toLowerCase()}`;
+  }
+  
+  // Clean arbitrary string to safe identifier slug
+  return str.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase() || 'general';
+}
+
+/**
+ * Compare two category strings for equivalence (e.g. "Category A" equals "Cat A" or "A")
+ */
+export function matchCategory(cat1, cat2) {
+  if (!cat1 && !cat2) return true;
+  if (!cat1 || !cat2) return false;
+  const s1 = String(cat1).trim().toLowerCase();
+  const s2 = String(cat2).trim().toLowerCase();
+  if (s1 === s2) return true;
+
+  const slug1 = getCanonicalCategorySlug(cat1);
+  const slug2 = getCanonicalCategorySlug(cat2);
+  if (slug1 && slug2 && slug1 === slug2) return true;
+
+  // Strip "category " or "cat " prefix for clean comparison
+  const clean1 = s1.replace(/^(category|cat)\s*[-_:]?\s*/i, '').trim();
+  const clean2 = s2.replace(/^(category|cat)\s*[-_:]?\s*/i, '').trim();
+  if (clean1 && clean2 && clean1 === clean2) return true;
+
+  return false;
+}
+
+/**
+ * Resolve requested category against session categories array
+ */
+export function resolveCategoryInSession(sessionCategories, requestedCategory) {
+  if (!Array.isArray(sessionCategories) || sessionCategories.length === 0) {
+    return requestedCategory || 'Category A';
+  }
+  if (!requestedCategory) {
+    return sessionCategories[0];
+  }
+  // Exact match first
+  const exact = sessionCategories.find((c) => c.trim().toLowerCase() === requestedCategory.trim().toLowerCase());
+  if (exact) return exact;
+  // Normalized/canonical match
+  const matched = sessionCategories.find((c) => matchCategory(c, requestedCategory));
+  if (matched) return matched;
+  // Fallback to first category in session
+  return sessionCategories[0];
+}
+
+/**
+ * Format category label nicely for display (avoiding "Category Category A")
+ */
+export function formatCategoryName(category) {
+  if (!category) return 'Category A';
+  const str = String(category).trim();
+  if (/^category\s+/i.test(str)) {
+    return str.charAt(0).toUpperCase() + str.slice(1);
+  }
+  if (/^cat\s+/i.test(str)) {
+    return 'Category ' + str.replace(/^cat\s+/i, '').trim();
+  }
+  if (/^[a-z0-9]$/i.test(str)) {
+    return `Category ${str.toUpperCase()}`;
+  }
+  return str;
+}
+
+/**
+ * Parse any variant slotId into its canonical components
+ */
+export function parseSlotId(slotId, defaultCategory = null) {
+  if (!slotId) return null;
+  const str = String(slotId).trim();
+  
+  // Format: slot_[categorySlug]_[startMinutes]_[endMinutes] or slot_[startMinutes]_[endMinutes]
+  const matchWithCat = str.match(/^slot_(.+)_(\d+)_(\d+)$/i);
+  if (matchWithCat) {
+    const rawCat = matchWithCat[1];
+    const startMins = Number(matchWithCat[2]);
+    const endMins = Number(matchWithCat[3]);
+    const canonicalSlug = getCanonicalCategorySlug(rawCat);
+    return {
+      rawId: str,
+      canonicalId: `slot_${canonicalSlug}_${startMins}_${endMins}`,
+      baseId: `slot_${startMins}_${endMins}`,
+      categorySlug: canonicalSlug,
+      startMinutes: startMins,
+      endMinutes: endMins
+    };
+  }
+
+  const matchBase = str.match(/^slot_(\d+)_(\d+)$/i);
+  if (matchBase) {
+    const startMins = Number(matchBase[1]);
+    const endMins = Number(matchBase[2]);
+    const canonicalSlug = defaultCategory ? getCanonicalCategorySlug(defaultCategory) : 'cat_a';
+    return {
+      rawId: str,
+      canonicalId: `slot_${canonicalSlug}_${startMins}_${endMins}`,
+      baseId: `slot_${startMins}_${endMins}`,
+      categorySlug: canonicalSlug,
+      startMinutes: startMins,
+      endMinutes: endMins
+    };
+  }
+
+  return null;
+}
+
+/**
  * Generate 15-minute slot definitions between start and end time
  */
 export function generateTimeSlots(startTime24, endTime24, slotDurationMinutes = 15, category = null) {
@@ -42,6 +162,7 @@ export function generateTimeSlots(startTime24, endTime24, slotDurationMinutes = 
 
   const slots = [];
   let currentMins = startMins;
+  const canonicalSlug = category ? getCanonicalCategorySlug(category) : null;
 
   while (currentMins + slotDurationMinutes <= endMins) {
     const nextMins = currentMins + slotDurationMinutes;
@@ -49,11 +170,12 @@ export function generateTimeSlots(startTime24, endTime24, slotDurationMinutes = 
     const endFormatted = minutesTo12Hour(nextMins);
     const period = getSlotPeriod(currentMins);
     const baseId = `slot_${currentMins}_${nextMins}`;
-    const slotId = category ? `slot_${category}_${currentMins}_${nextMins}` : baseId;
+    const slotId = canonicalSlug ? `slot_${canonicalSlug}_${currentMins}_${nextMins}` : baseId;
 
     slots.push({
       id: slotId,
       baseId: baseId,
+      canonicalSlug: canonicalSlug || 'cat_a',
       category: category || null,
       startTime: startFormatted,
       endTime: endFormatted,

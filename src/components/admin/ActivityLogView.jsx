@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { getAllActivityEvents, subscribeToSync } from '../../services/storage';
+import { getAllActivityEvents, subscribeToAdminSync } from '../../services/storage';
 import { isFirebaseConfigured } from '../../services/firebase';
 
 export default function ActivityLogView() {
@@ -12,7 +12,7 @@ export default function ActivityLogView() {
 
   useEffect(() => {
     loadEvents();
-    const unsubscribe = subscribeToSync(() => {
+    const unsubscribe = subscribeToAdminSync(() => {
       loadEvents();
     });
     return () => unsubscribe();

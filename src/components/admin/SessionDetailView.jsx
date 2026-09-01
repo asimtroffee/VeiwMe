@@ -9,9 +9,10 @@ import {
   updateSessionCategories,
   resetTesterSessionState,
   clearParticipantProfile,
-  subscribeToSync
+  fetchRemoteSession,
+  subscribeToSessionSync
 } from '../../services/storage';
-import { formatDateDisplay } from '../../services/timeUtils';
+import { formatDateDisplay, matchCategory, formatCategoryName } from '../../services/timeUtils';
 import ConfirmModal from '../common/ConfirmModal';
 import EditSessionModal from './EditSessionModal';
 
@@ -36,14 +37,21 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
 
   const loadData = () => {
     const details = getSessionDetails(sessionId);
-    setSession(details);
+    if (details) setSession(details);
     const atts = getSessionAttendees(sessionId);
     setAttendees(atts);
   };
 
   useEffect(() => {
     loadData();
-    const unsubscribe = subscribeToSync(() => {
+    fetchRemoteSession(sessionId).then((fresh) => {
+      if (fresh) {
+        setSession(fresh);
+        setAttendees(getSessionAttendees(sessionId));
+      }
+    });
+
+    const unsubscribe = subscribeToSessionSync(sessionId, () => {
       loadData();
     });
     return () => unsubscribe();
@@ -247,7 +255,7 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     if (!session) return [];
     const sourceSlots = session.allSlots || session.slots || [];
     return sourceSlots.filter((slot) => {
-      if (selectedCategoryTab !== 'all' && slot.category && slot.category !== selectedCategoryTab) {
+      if (selectedCategoryTab !== 'all' && slot.category && !matchCategory(slot.category, selectedCategoryTab)) {
         return false;
       }
       if (filterPeriod === 'available') return !slot.isBooked && !slot.isBlocked;
@@ -288,7 +296,7 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
                   Booked
                 </span>
                 <span className="chip chip-accent" style={{ fontSize: '10px', padding: '1px 6px' }}>
-                  Category {slot.booking.candidateCategory || 'A'}
+                  {formatCategoryName(slot.category || slot.booking?.candidateCategory || 'Category A')}
                 </span>
               </div>
               <div style={{ fontSize: '12px', color: 'var(--color-secondary)', marginTop: '4px' }}>
@@ -361,6 +369,11 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
               <span className="chip chip-success" style={{ fontSize: '11px', padding: '2px 8px' }}>
                 Open
               </span>
+              {selectedCategoryTab === 'all' && slot.category && (
+                <span className="chip chip-neutral" style={{ fontSize: '10px', padding: '1px 6px' }}>
+                  {formatCategoryName(slot.category)}
+                </span>
+              )}
             </div>
             <div style={{ fontSize: '12px', color: 'var(--color-secondary)', marginTop: '4px' }}>
               Available for candidate booking
@@ -403,7 +416,7 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
                   {slot.booking.candidateName}
                 </span>
                 <span className="chip chip-accent" style={{ fontSize: '10px', padding: '1px 6px' }}>
-                  Category {slot.booking.candidateCategory || 'A'}
+                  {formatCategoryName(slot.category || slot.booking?.candidateCategory || 'Category A')}
                 </span>
               </div>
               <div style={{ fontSize: '12px', color: 'var(--color-secondary)', marginTop: '2px' }}>
@@ -1024,7 +1037,7 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
               {(session.categories || ['Category A', 'Category B', 'Category C']).map((cat) => {
                 const catSlots = session.categorySlots?.[cat] || [];
                 const catBooked = catSlots.filter((s) => s.isBooked).length;
-                const isSelected = selectedCategoryTab === cat;
+                const isSelected = selectedCategoryTab === cat || (selectedCategoryTab !== 'all' && matchCategory(selectedCategoryTab, cat));
                 return (
                   <button
                     key={cat}

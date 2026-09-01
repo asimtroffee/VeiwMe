@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { getAllCandidates, getAllAttendees, cancelBooking, subscribeToSync } from '../../services/storage';
+import {
+  getAllCandidates,
+  getAllAttendees,
+  cancelBooking,
+  subscribeToAdminSync,
+  fetchAllRemoteAdminData
+} from '../../services/storage';
 import { formatDateDisplay } from '../../services/timeUtils';
 import ConfirmModal from '../common/ConfirmModal';
 
@@ -17,7 +23,11 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
 
   useEffect(() => {
     loadData();
-    const unsubscribe = subscribeToSync(() => {
+    fetchAllRemoteAdminData().then(() => {
+      loadData();
+    });
+
+    const unsubscribe = subscribeToAdminSync(() => {
       loadData();
     });
     return () => unsubscribe();
