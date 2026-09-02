@@ -1019,41 +1019,145 @@ export function getSessionDetails(sessionId, selectedCategory = null) {
 
 /**
  * Toggle attendance status for a booked slot.
+ * Accepts either slotId (string) or full slot object.
  * @param {string} sessionId
- * @param {string} slotId
+ * @param {string|object} slotOrSlotId
  * @param {'not_marked'|'attended'|'no_show'} status
  */
-export async function updateBookingAttendance(sessionId, slotId, status) {
+export async function updateBookingAttendance(sessionId, slotOrSlotId, status) {
   const bookings = getRawBookings();
-  const key = `${sessionId}_${slotId}`;
+  const sessions = getRawSessions();
+  const session = sessions.find((s) => s.id === sessionId);
 
-  // Find the booking (try direct key, canonical key, then scan for matching slot)
+  const slotId = typeof slotOrSlotId === 'string' ? slotOrSlotId : slotOrSlotId?.id;
+  const slotObj = typeof slotOrSlotId === 'object' ? slotOrSlotId : null;
+  const slotBooking = slotObj?.booking || null;
+
   let bookingKey = null;
   let targetBooking = null;
 
-  if (bookings[key]) {
-    bookingKey = key;
-    targetBooking = bookings[key];
-  } else {
-    for (const [k, b] of Object.entries(bookings)) {
-      if (!k.startsWith(`${sessionId}_`)) continue;
-      if (b.slotId === slotId || k === key) {
-        bookingKey = k;
-        targetBooking = b;
-        break;
-      }
-      const parsedSlot = parseSlotId(slotId, b.candidateCategory);
-      const canonical = parsedSlot?.canonicalId || slotId;
-      if (b.slotId === canonical || k === `${sessionId}_${canonical}`) {
-        bookingKey = k;
-        targetBooking = b;
-        break;
+  // 1. Direct match by key with slotId
+  if (slotId && bookings[`${sessionId}_${slotId}`]) {
+    bookingKey = `${sessionId}_${slotId}`;
+    targetBooking = bookings[bookingKey];
+  }
+
+  // 2. Direct match by slot.booking.slotId
+  if (!targetBooking && slotBooking?.slotId) {
+    const bKey = `${sessionId}_${slotBooking.slotId}`;
+    if (bookings[bKey]) {
+      bookingKey = bKey;
+      targetBooking = bookings[bKey];
+    }
+  }
+
+  // 3. Match using findBookingForSlot if slot object is available
+  if (!targetBooking && slotObj) {
+    const category = slotObj.category || slotBooking?.candidateCategory || 'Category A';
+    const found = findBookingForSlot(bookings, sessionId, slotObj, category);
+    if (found) {
+      targetBooking = found;
+      for (const [k, b] of Object.entries(bookings)) {
+        if (b === found || (k.startsWith(`${sessionId}_`) && b.slotId === found.slotId)) {
+          bookingKey = k;
+          break;
+        }
       }
     }
   }
 
-  if (!bookingKey || !targetBooking) {
+  // 4. Scan all bookings in this session for match by candidate email, phone, name, startMinutes, or slotId
+  if (!targetBooking) {
+    const candidateEmail = (slotBooking?.candidateEmail || '').trim().toLowerCase();
+    const candidateName = (slotBooking?.candidateName || '').trim().toLowerCase();
+    const candidatePhone = (slotBooking?.candidatePhone || '').replace(/\D/g, '');
+    const startMins = slotObj?.startMinutes !== undefined ? slotObj.startMinutes : slotBooking?.startMinutes;
+    const endMins = slotObj?.endMinutes !== undefined ? slotObj.endMinutes : slotBooking?.endMinutes;
+
+    for (const [k, b] of Object.entries(bookings)) {
+      if (!k.startsWith(`${sessionId}_`)) continue;
+
+      const bEmail = (b.candidateEmail || '').trim().toLowerCase();
+      const bName = (b.candidateName || '').trim().toLowerCase();
+      const bPhone = (b.candidatePhone || '').replace(/\D/g, '');
+
+      // Check slot ID or canonical slot ID match
+      if (slotId && (b.slotId === slotId || k === `${sessionId}_${slotId}`)) {
+        bookingKey = k;
+        targetBooking = b;
+        break;
+      }
+      if (slotBooking?.slotId && (b.slotId === slotBooking.slotId || k === `${sessionId}_${slotBooking.slotId}`)) {
+        bookingKey = k;
+        targetBooking = b;
+        break;
+      }
+
+      // Check candidate identity match
+      const emailMatches = candidateEmail && bEmail && candidateEmail === bEmail;
+      const phoneMatches = candidatePhone && candidatePhone.length >= 7 && bPhone && candidatePhone === bPhone;
+      const nameMatches = candidateName && bName && candidateName === bName;
+
+      if (emailMatches || phoneMatches || (nameMatches && (candidateEmail || candidatePhone))) {
+        bookingKey = k;
+        targetBooking = b;
+        break;
+      }
+
+      // Check startMinutes and endMinutes match
+      if (startMins !== undefined && endMins !== undefined && b.startMinutes === startMins && b.endMinutes === endMins) {
+        bookingKey = k;
+        targetBooking = b;
+        break;
+      }
+
+      // Check parsed slot ID
+      if (slotId) {
+        const parsedSlot = parseSlotId(slotId, b.candidateCategory);
+        if (parsedSlot && (b.slotId === parsedSlot.canonicalId || b.slotId === parsedSlot.rawId)) {
+          bookingKey = k;
+          targetBooking = b;
+          break;
+        }
+      }
+    }
+  }
+
+  // 5. Cloud fallback: If still not found locally, query Firestore for this session's bookings
+  if (!targetBooking && isFirebaseConfigured() && db) {
+    try {
+      const q = query(collection(db, 'bookings'), where('sessionId', '==', sessionId));
+      const snap = await getDocs(q);
+      const candidateEmail = (slotBooking?.candidateEmail || '').trim().toLowerCase();
+      const candidateName = (slotBooking?.candidateName || '').trim().toLowerCase();
+
+      snap.forEach((d) => {
+        if (targetBooking) return;
+        const b = d.data();
+        const bEmail = (b.candidateEmail || '').trim().toLowerCase();
+        const bName = (b.candidateName || '').trim().toLowerCase();
+
+        if (
+          (slotId && (d.id === `${sessionId}_${slotId}` || b.slotId === slotId)) ||
+          (slotBooking?.slotId && (d.id === `${sessionId}_${slotBooking.slotId}` || b.slotId === slotBooking.slotId)) ||
+          (candidateEmail && bEmail && candidateEmail === bEmail) ||
+          (candidateName && bName && candidateName === bName)
+        ) {
+          bookingKey = d.id;
+          targetBooking = b;
+        }
+      });
+    } catch (err) {
+      console.warn('Firestore fallback booking search error:', err);
+    }
+  }
+
+  if (!targetBooking) {
     return { success: false, error: 'Booking not found.' };
+  }
+
+  if (!bookingKey) {
+    bookingKey = targetBooking.slotId ? `${sessionId}_${targetBooking.slotId}` : `${sessionId}_${slotId}`;
   }
 
   const updatedBooking = {
@@ -1064,16 +1168,20 @@ export async function updateBookingAttendance(sessionId, slotId, status) {
   bookings[bookingKey] = updatedBooking;
   saveRawBookings(bookings);
 
-  // Canonical Firestore document ID
-  const firestoreDocId = targetBooking.slotId ? `${sessionId}_${targetBooking.slotId}` : bookingKey;
-
-  // Persist to Firestore
+  // Sync to Firestore
   if (isFirebaseConfigured() && db) {
     try {
-      await setDoc(doc(db, 'bookings', firestoreDocId), {
+      await setDoc(doc(db, 'bookings', bookingKey), {
         attendanceStatus: status,
         attendanceMarkedAt: updatedBooking.attendanceMarkedAt
       }, { merge: true });
+
+      if (targetBooking.slotId && `${sessionId}_${targetBooking.slotId}` !== bookingKey) {
+        await setDoc(doc(db, 'bookings', `${sessionId}_${targetBooking.slotId}`), {
+          attendanceStatus: status,
+          attendanceMarkedAt: updatedBooking.attendanceMarkedAt
+        }, { merge: true }).catch(() => {});
+      }
     } catch (err) {
       console.warn('Could not update attendance in Firestore:', err);
     }
@@ -1083,23 +1191,37 @@ export async function updateBookingAttendance(sessionId, slotId, status) {
   const attendeeIdentifier = (targetBooking.candidateEmail || targetBooking.candidatePhone || targetBooking.candidateContact || targetBooking.candidateName || '').toLowerCase().trim();
   const attKey = `${sessionId}_${attendeeIdentifier}`;
   const attendees = getRawAttendees();
-  if (attendees[attKey]) {
-    attendees[attKey] = {
-      ...attendees[attKey],
+  let attendeeKey = attendees[attKey] ? attKey : null;
+
+  if (!attendeeKey) {
+    for (const [ak, a] of Object.entries(attendees)) {
+      if (!ak.startsWith(`${sessionId}_`)) continue;
+      if (
+        (targetBooking.candidateEmail && a.email && a.email.toLowerCase() === targetBooking.candidateEmail.toLowerCase()) ||
+        (targetBooking.candidatePhone && a.phone && a.phone.replace(/\D/g, '') === targetBooking.candidatePhone.replace(/\D/g, '')) ||
+        (targetBooking.candidateName && a.name && a.name.toLowerCase() === targetBooking.candidateName.toLowerCase())
+      ) {
+        attendeeKey = ak;
+        break;
+      }
+    }
+  }
+
+  if (attendeeKey && attendees[attendeeKey]) {
+    attendees[attendeeKey] = {
+      ...attendees[attendeeKey],
       attendanceStatus: status,
       attendanceMarkedAt: updatedBooking.attendanceMarkedAt
     };
     saveRawAttendees(attendees);
     if (isFirebaseConfigured() && db) {
-      setDoc(doc(db, 'attendees', attKey), {
+      setDoc(doc(db, 'attendees', attendeeKey), {
         attendanceStatus: status,
         attendanceMarkedAt: updatedBooking.attendanceMarkedAt
       }, { merge: true }).catch(() => {});
     }
   }
 
-  const sessions = getRawSessions();
-  const session = sessions.find(s => s.id === sessionId);
   logActivityEvent({
     type: 'ATTENDANCE_UPDATED',
     sessionId,
@@ -1109,7 +1231,7 @@ export async function updateBookingAttendance(sessionId, slotId, status) {
   });
 
   broadcast('ATTENDANCE_UPDATED', { sessionId, slotId, status });
-  return { success: true, status };
+  return { success: true, status, booking: updatedBooking };
 }
 
 export async function toggleSlotBlocked(sessionId, slotId, reason = 'Unavailable') {
@@ -2182,14 +2304,19 @@ export async function rescheduleBooking(sessionId, oldSlotId, newSlotId, candida
   };
 }
 
-export async function cancelBooking(sessionId, slotId, candidateProfile = null, isCandidateAction = false) {
+export async function cancelBooking(sessionId, slotOrSlotId, candidateProfile = null, isCandidateAction = false) {
+  const slotObj = typeof slotOrSlotId === 'object' ? slotOrSlotId : null;
+  const slotId = typeof slotOrSlotId === 'string' ? slotOrSlotId : (slotObj?.booking?.slotId || slotObj?.id);
+  const slotBooking = slotObj?.booking || null;
+
   // For candidate self-cancel: only enforce the 3-hour cutoff, NOT the slot change limit
-  if (isCandidateAction && candidateProfile) {
+  if (isCandidateAction && (candidateProfile || slotBooking)) {
+    const effectiveProfile = candidateProfile || slotBooking;
     const sessions = getRawSessions();
     const sess = sessions.find((s) => s.id === sessionId);
     if (sess) {
       const days = normalizeSessionDays(sess);
-      const parsed = parseSlotId(slotId, candidateProfile?.category);
+      const parsed = parseSlotId(slotId, effectiveProfile?.category);
       const canonicalSlotId = parsed?.canonicalId || slotId;
       let slotDate = sess.date;
       if (parsed?.dayId) {
@@ -2197,7 +2324,7 @@ export async function cancelBooking(sessionId, slotId, candidateProfile = null, 
         if (matchDay?.date) slotDate = matchDay.date;
       }
       const bookings = getRawBookings();
-      const bk = bookings[`${sessionId}_${slotId}`] || bookings[`${sessionId}_${canonicalSlotId}`];
+      const bk = bookings[`${sessionId}_${slotId}`] || bookings[`${sessionId}_${canonicalSlotId}`] || slotBooking;
       if (bk?.slotDate) slotDate = bk.slotDate;
 
       const isWithin3Hours = isSlotWithinCutoff(slotDate, canonicalSlotId, 3);
@@ -2220,20 +2347,23 @@ export async function cancelBooking(sessionId, slotId, candidateProfile = null, 
   const sessions = getRawSessions();
   const session = sessions.find((s) => s.id === sessionId);
 
-  const parsed = parseSlotId(slotId, candidateProfile?.category);
+  const parsed = parseSlotId(slotId, (candidateProfile || slotBooking)?.category);
   const canonicalSlotId = parsed ? parsed.canonicalId : slotId;
 
   // Find all booking keys matching this slot or this candidate
   const bookingKeysToDelete = new Set();
-  if (bookings[`${sessionId}_${slotId}`]) bookingKeysToDelete.add(`${sessionId}_${slotId}`);
-  if (bookings[`${sessionId}_${canonicalSlotId}`]) bookingKeysToDelete.add(`${sessionId}_${canonicalSlotId}`);
+  if (slotId && bookings[`${sessionId}_${slotId}`]) bookingKeysToDelete.add(`${sessionId}_${slotId}`);
+  if (canonicalSlotId && bookings[`${sessionId}_${canonicalSlotId}`]) bookingKeysToDelete.add(`${sessionId}_${canonicalSlotId}`);
+  if (slotBooking?.slotId && bookings[`${sessionId}_${slotBooking.slotId}`]) bookingKeysToDelete.add(`${sessionId}_${slotBooking.slotId}`);
 
-  let removedBooking = bookings[`${sessionId}_${slotId}`] || bookings[`${sessionId}_${canonicalSlotId}`];
+  let removedBooking = (slotId && bookings[`${sessionId}_${slotId}`]) || (canonicalSlotId && bookings[`${sessionId}_${canonicalSlotId}`]) || (slotBooking?.slotId && bookings[`${sessionId}_${slotBooking.slotId}`]) || slotBooking;
 
-  if (!removedBooking && candidateProfile) {
-    const cEmail = (candidateProfile.email || '').toLowerCase().trim();
-    const cName = (candidateProfile.name || '').toLowerCase().trim();
-    const cPhone = (candidateProfile.phone || '').replace(/\D/g, '');
+  if (!removedBooking || bookingKeysToDelete.size === 0) {
+    const cEmail = (candidateProfile?.email || slotBooking?.candidateEmail || '').toLowerCase().trim();
+    const cName = (candidateProfile?.name || slotBooking?.candidateName || '').toLowerCase().trim();
+    const cPhone = (candidateProfile?.phone || slotBooking?.candidatePhone || '').replace(/\D/g, '');
+    const startMins = slotObj?.startMinutes !== undefined ? slotObj.startMinutes : slotBooking?.startMinutes;
+    const endMins = slotObj?.endMinutes !== undefined ? slotObj.endMinutes : slotBooking?.endMinutes;
 
     Object.entries(bookings).forEach(([k, b]) => {
       if (!k.startsWith(`${sessionId}_`)) return;
@@ -2241,11 +2371,42 @@ export async function cancelBooking(sessionId, slotId, candidateProfile = null, 
       const bName = (b.candidateName || '').toLowerCase().trim();
       const bPhone = (b.candidatePhone || '').replace(/\D/g, '');
 
-      if ((cEmail && bEmail && cEmail === bEmail) || (cPhone && cPhone.length >= 7 && bPhone === cPhone) || (cName && bName && cName === bName)) {
+      const isSlotMatch = b.slotId === slotId || (canonicalSlotId && b.slotId === canonicalSlotId) || (slotBooking?.slotId && b.slotId === slotBooking.slotId);
+      const isCandidateMatch = (cEmail && bEmail && cEmail === bEmail) || (cPhone && cPhone.length >= 7 && bPhone === cPhone) || (cName && bName && cName === bName);
+      const isTimeMatch = startMins !== undefined && endMins !== undefined && b.startMinutes === startMins && b.endMinutes === endMins;
+
+      if (isSlotMatch || isCandidateMatch || isTimeMatch) {
         bookingKeysToDelete.add(k);
-        removedBooking = b;
+        if (!removedBooking) removedBooking = b;
       }
     });
+  }
+
+  // Cloud fallback: If local keys wasn't found, search Firestore
+  if (bookingKeysToDelete.size === 0 && isFirebaseConfigured() && db) {
+    try {
+      const q = query(collection(db, 'bookings'), where('sessionId', '==', sessionId));
+      const snap = await getDocs(q);
+      const cEmail = (candidateProfile?.email || slotBooking?.candidateEmail || '').toLowerCase().trim();
+      const cName = (candidateProfile?.name || slotBooking?.candidateName || '').toLowerCase().trim();
+
+      snap.forEach((d) => {
+        const b = d.data();
+        const bEmail = (b.candidateEmail || '').toLowerCase().trim();
+        const bName = (b.candidateName || '').toLowerCase().trim();
+        if (
+          (slotId && (d.id === `${sessionId}_${slotId}` || b.slotId === slotId)) ||
+          (slotBooking?.slotId && (d.id === `${sessionId}_${slotBooking.slotId}` || b.slotId === slotBooking.slotId)) ||
+          (cEmail && bEmail && cEmail === bEmail) ||
+          (cName && bName && cName === bName)
+        ) {
+          bookingKeysToDelete.add(d.id);
+          if (!removedBooking) removedBooking = b;
+        }
+      });
+    } catch (err) {
+      console.warn('Firestore cancel booking search error:', err);
+    }
   }
 
   if (bookingKeysToDelete.size === 0) {
@@ -2377,7 +2538,12 @@ export function getAllCandidates() {
 export function getParticipantProfile(sessionId) {
   try {
     if (!sessionId) return null;
-    const data = localStorage.getItem(`${PARTICIPANT_KEY}_${sessionId}`);
+    let data = localStorage.getItem(`${PARTICIPANT_KEY}_${sessionId}`);
+    if (!data) {
+      data = localStorage.getItem(`viewme_participant_${sessionId}`) ||
+             localStorage.getItem(`viewme_participant_profile_${sessionId}`) ||
+             localStorage.getItem('viewme_participant_profile');
+    }
     if (!data) return null;
     const parsed = JSON.parse(data);
     if (!parsed) return null;

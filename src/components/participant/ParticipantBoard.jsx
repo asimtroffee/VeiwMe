@@ -117,7 +117,10 @@ export default function ParticipantBoard({ session: initialSession, participantP
       const bName = (slot.booking.candidateName || '').toLowerCase().trim();
 
       const isSameEmail = pEmail && bEmail && pEmail === bEmail;
-      const isSamePhone = pPhone && pPhone.length >= 10 && bPhone && bPhone.length >= 10 && pPhone === bPhone;
+      const isSamePhone = pPhone && bPhone && (
+        pPhone === bPhone ||
+        (pPhone.length >= 7 && (bPhone.endsWith(pPhone) || pPhone.endsWith(bPhone)))
+      );
       const isSameContact = pContact && bContact && pContact === bContact;
       const isSameName = pName && bName && pName === bName;
 
@@ -434,7 +437,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
       slot.isBooked &&
       (
         (pEmail && bEmail && pEmail === bEmail) ||
-        (pPhone && pPhone.length >= 10 && bPhone && bPhone.length >= 10 && pPhone === bPhone) ||
+        (pPhone && bPhone && (pPhone === bPhone || (pPhone.length >= 7 && (bPhone.endsWith(pPhone) || pPhone.endsWith(bPhone))))) ||
         (pContact && bContact && pContact === bContact) ||
         (pName && bName && pName === bName && (pEmail || pPhone))
       );

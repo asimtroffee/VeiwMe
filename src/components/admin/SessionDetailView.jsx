@@ -67,7 +67,7 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
 
   const handleConfirmCancelSlot = async () => {
     if (!slotToCancel) return;
-    const res = await cancelBooking(sessionId, slotToCancel.id);
+    const res = await cancelBooking(sessionId, slotToCancel);
     if (res.success) {
       onShowToast(`Cancelled booking for ${slotToCancel.booking?.candidateName || 'slot'}`);
       loadData();
@@ -86,7 +86,7 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
   };
 
   const handleToggleAttendance = async (slot, newStatus) => {
-    const res = await updateBookingAttendance(sessionId, slot.id, newStatus);
+    const res = await updateBookingAttendance(sessionId, slot, newStatus);
     if (res.success) {
       const label = newStatus === 'attended' ? 'Attended' : newStatus === 'no_show' ? 'No-show' : 'Not marked';
       onShowToast(`${slot.booking?.candidateName || 'Candidate'} marked as "${label}"`);
