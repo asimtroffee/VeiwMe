@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { recordSessionAttendee, isTesterAccount } from '../../services/storage';
-import { formatDateDisplay, formatCategoryName, resolveCategoryInSession } from '../../services/timeUtils';
+import { formatDateDisplay, formatEventDateRange, formatCategoryName, resolveCategoryInSession } from '../../services/timeUtils';
 
 export default function ParticipantGate({ session, onGatePassed }) {
   const sessionCategories = session?.categories && session.categories.length > 0
@@ -13,34 +13,87 @@ export default function ParticipantGate({ session, onGatePassed }) {
   const [phone, setPhone] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [touched, setTouched] = useState({});
 
-  // Validation helpers
-  const isValidEmail = (str) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str.trim());
-  const isValidPhone = (str) => /^[\+]?[(]?[0-9]{3}[)]?[-\s\.]?[0-9]{3}[-\s\.]?[0-9]{4,6}$/.test(str.replace(/\s+/g, '')) || str.replace(/\D/g, '').length >= 10;
+  // --- Validation helpers ---
 
-  const handleSubmit = (e) => {
+  // Full name: at least 2 words, each word ≥ 2 letters, only letters/hyphens/apostrophes/spaces
+  const validateFullName = (str) => {
+    const trimmed = (str || '').trim();
+    if (!trimmed) return 'Please enter your full name.';
+    // Only allow letters (including accented), hyphens, apostrophes, and spaces
+    if (/[^a-zA-Z\u00C0-\u024F\u1E00-\u1EFF'\-\s]/.test(trimmed)) {
+      return 'Name can only contain letters, hyphens, and apostrophes.';
+    }
+    const words = trimmed.split(/\s+/).filter(w => w.length > 0);
+    if (words.length < 2) {
+      return 'Please enter your first and last name (e.g. "Sara Connor").';
+    }
+    const shortWord = words.find(w => w.replace(/['\-]/g, '').length < 2);
+    if (shortWord) {
+      return `Each part of your name must be at least 2 letters. "${shortWord}" is too short.`;
+    }
+    return null; // valid
+  };
+
+  // Email
+  const validateEmail = (str) => {
+    const trimmed = (str || '').trim();
+    if (!trimmed) return 'Please enter your email address.';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trimmed)) {
+      return 'Please enter a valid email (e.g. name@example.com).';
+    }
+    return null;
+  };
+
+  // Phone: must contain at least 10 digits after stripping formatting
+  const validatePhone = (str) => {
+    const trimmed = (str || '').trim();
+    if (!trimmed) return 'Please enter your phone number.';
+    const digitsOnly = trimmed.replace(/\D/g, '');
+    if (digitsOnly.length < 10) {
+      return 'Phone number must have at least 10 digits (e.g. +1 555 019 2834).';
+    }
+    if (digitsOnly.length > 15) {
+      return 'Phone number is too long. Please check and re-enter.';
+    }
+    // Must start with optional + then digits
+    if (!/^[+]?[\d\s()\-\.]+$/.test(trimmed)) {
+      return 'Phone number can only contain digits, spaces, +, -, (, and ).';
+    }
+    return null;
+  };
+
+  const nameError = touched.name ? validateFullName(name) : null;
+  const emailError = touched.email ? validateEmail(email) : null;
+  const phoneError = touched.phone ? validatePhone(phone) : null;
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+
+    // Mark all as touched to show inline errors
+    setTouched({ name: true, email: true, phone: true });
 
     const trimmedName = name.trim();
     const trimmedCategory = resolveCategoryInSession(sessionCategories, category);
     const trimmedEmail = email.trim();
     const trimmedPhone = phone.trim();
 
-    if (!trimmedName || trimmedName.length < 2) {
-      setError('Please enter your full name.');
-      return;
-    }
+    // Run all validations
+    const nameErr = validateFullName(trimmedName);
+    if (nameErr) { setError(nameErr); return; }
 
     if (!trimmedCategory) {
       setError('Please select a Category.');
       return;
     }
 
-    if (!trimmedEmail || !isValidEmail(trimmedEmail)) {
-      setError('Please enter a valid email address (e.g. name@example.com).');
-      return;
-    }
+    const emailErr = validateEmail(trimmedEmail);
+    if (emailErr) { setError(emailErr); return; }
+
+    const phoneErr = validatePhone(trimmedPhone);
+    if (phoneErr) { setError(phoneErr); return; }
 
     const isTester = isTesterAccount({ email: trimmedEmail, contact: `${trimmedEmail} • ${trimmedPhone}`, name: trimmedName });
 
@@ -48,7 +101,7 @@ export default function ParticipantGate({ session, onGatePassed }) {
 
     try {
       // Record attendee check-in in the database immediately
-      const attendee = recordSessionAttendee(session.id, {
+      const attendee = await recordSessionAttendee(session.id, {
         name: trimmedName,
         category: trimmedCategory,
         email: trimmedEmail,
@@ -126,17 +179,26 @@ export default function ParticipantGate({ session, onGatePassed }) {
 
           <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
             <span className="chip chip-accent">
-              <span className="material-symbols-outlined" style={{ fontSize: '14px', marginRight: '4px' }}>event</span>
-              {formatDateDisplay(session.date)}
+              <span className="material-symbols-outlined" style={{ fontSize: '14px', marginRight: '4px' }}>
+                {session.eventType === 'multi' || session.days?.length > 1 ? 'date_range' : 'event'}
+              </span>
+              {formatEventDateRange(session)}
             </span>
-            <span className="chip chip-neutral">
-              <span className="material-symbols-outlined" style={{ fontSize: '14px', marginRight: '4px' }}>schedule</span>
-              {session.startTime} – {session.endTime} ({session.timezone})
-            </span>
+            {(!session.days || session.days.length <= 1) && (
+              <span className="chip chip-neutral">
+                <span className="material-symbols-outlined" style={{ fontSize: '14px', marginRight: '4px' }}>schedule</span>
+                {session.startTime} – {session.endTime} ({session.timezone})
+              </span>
+            )}
             <span className="chip chip-neutral">
               <span className="material-symbols-outlined" style={{ fontSize: '14px', marginRight: '4px' }}>timer</span>
               {session.slotDuration || 15} min slots
             </span>
+            {session.days?.length > 1 && (
+              <span className="chip chip-neutral">
+                {session.timezone} Timezone
+              </span>
+            )}
           </div>
 
           <h1 className="headline-md" style={{ color: 'var(--color-primary)', marginBottom: '8px' }}>
@@ -212,10 +274,24 @@ export default function ParticipantGate({ session, onGatePassed }) {
               placeholder="e.g. Eleanor Vance"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              onBlur={() => setTouched(p => ({ ...p, name: true }))}
               required
               autoFocus
               disabled={isSubmitting}
+              style={nameError ? { borderColor: 'var(--color-error)', boxShadow: '0 0 0 1px var(--color-error)' } : {}}
             />
+            {nameError && (
+              <span style={{ fontSize: '12px', color: 'var(--color-error)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '5px' }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>warning</span>
+                {nameError}
+              </span>
+            )}
+            {!nameError && touched.name && name.trim() && (
+              <span style={{ fontSize: '12px', color: 'var(--color-success, #16a34a)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '5px' }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>check_circle</span>
+                Looks good!
+              </span>
+            )}
           </div>
 
           <div style={{ marginBottom: '16px' }}>
@@ -250,9 +326,23 @@ export default function ParticipantGate({ session, onGatePassed }) {
               placeholder="e.g. eleanor@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              onBlur={() => setTouched(p => ({ ...p, email: true }))}
               required
               disabled={isSubmitting}
+              style={emailError ? { borderColor: 'var(--color-error)', boxShadow: '0 0 0 1px var(--color-error)' } : {}}
             />
+            {emailError && (
+              <span style={{ fontSize: '12px', color: 'var(--color-error)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '5px' }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>warning</span>
+                {emailError}
+              </span>
+            )}
+            {!emailError && touched.email && email.trim() && (
+              <span style={{ fontSize: '12px', color: 'var(--color-success, #16a34a)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '5px' }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>check_circle</span>
+                Valid email
+              </span>
+            )}
           </div>
 
           <div style={{ marginBottom: '24px' }}>
@@ -266,9 +356,23 @@ export default function ParticipantGate({ session, onGatePassed }) {
               placeholder="e.g. +1 (555) 019-2834"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
+              onBlur={() => setTouched(p => ({ ...p, phone: true }))}
               required
               disabled={isSubmitting}
+              style={phoneError ? { borderColor: 'var(--color-error)', boxShadow: '0 0 0 1px var(--color-error)' } : {}}
             />
+            {phoneError && (
+              <span style={{ fontSize: '12px', color: 'var(--color-error)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '5px' }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>warning</span>
+                {phoneError}
+              </span>
+            )}
+            {!phoneError && touched.phone && phone.trim() && (
+              <span style={{ fontSize: '12px', color: 'var(--color-success, #16a34a)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '5px' }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>check_circle</span>
+                Valid phone number
+              </span>
+            )}
             <span style={{ fontSize: '11px', color: 'var(--color-secondary)', display: 'block', marginTop: '4px' }}>
               Your email and phone will be used to record attendance and send your booking confirmation.
             </span>

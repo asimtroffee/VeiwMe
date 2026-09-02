@@ -80,33 +80,36 @@ export default function App() {
   const sessionId = isSessionRoute ? hash.split('/')[1] : null;
   const isAdminRoute = hash === 'admin' || hash.startsWith('admin/');
 
-  // Fetch or sync session data whenever route changes or live sync fires
-  const loadActiveSession = async (targetSessionId) => {
-    if (!targetSessionId) return;
-
-    // Check local store first
-    const local = getSessionDetails(targetSessionId);
-    if (local) {
-      setCurrentSession(local);
-    } else {
-      setIsLoadingSession(true);
-    }
-
-    // Fetch remote Firestore data to ensure freshness on every device
-    try {
-      const remote = await fetchRemoteSession(targetSessionId);
-      if (remote) {
-        setCurrentSession(remote);
-      }
-    } catch (err) {
-      console.warn('Error fetching remote session:', err);
-    } finally {
-      setIsLoadingSession(false);
-      setSessionFetchAttempted(true);
-    }
-  };
-
   useEffect(() => {
+    let cancelled = false;
+
+    const loadActiveSession = async (targetSessionId) => {
+      if (!targetSessionId) return;
+
+      // Check local store first
+      const local = getSessionDetails(targetSessionId);
+      if (local) {
+        if (!cancelled) setCurrentSession(local);
+      } else {
+        if (!cancelled) setIsLoadingSession(true);
+      }
+
+      // Fetch remote Firestore data to ensure freshness on every device
+      try {
+        const remote = await fetchRemoteSession(targetSessionId);
+        if (remote && !cancelled) {
+          setCurrentSession(remote);
+        }
+      } catch (err) {
+        console.warn('Error fetching remote session:', err);
+      } finally {
+        if (!cancelled) {
+          setIsLoadingSession(false);
+          setSessionFetchAttempted(true);
+        }
+      }
+    };
+
     if (isSessionRoute && sessionId) {
       setSessionFetchAttempted(false);
       loadActiveSession(sessionId);
@@ -115,6 +118,8 @@ export default function App() {
       setIsLoadingSession(false);
       setSessionFetchAttempted(false);
     }
+
+    return () => { cancelled = true; };
   }, [currentHash, isSessionRoute, sessionId]);
 
   // Scoped Firestore synchronization: only listen to relevant data based on active route

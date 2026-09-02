@@ -11,7 +11,12 @@ import {
   parseSlotId,
   minutesTo12Hour
 } from './timeUtils';
-import { db, auth, isFirebaseConfigured } from './firebase';
+import { db, auth, isFirebaseConfigured, ensureFirebaseAuth } from './firebase';
+
+// Automatically ensure Firebase anonymous auth session on startup
+if (isFirebaseConfigured()) {
+  ensureFirebaseAuth().catch(() => {});
+}
 import {
   collection,
   doc,
@@ -31,6 +36,7 @@ import {
 } from 'firebase/auth';
 
 const SESSIONS_KEY = 'viewme_sessions_v2';
+const DELETED_SESSIONS_KEY = 'viewme_deleted_sessions_v2';
 const BOOKINGS_KEY = 'viewme_bookings_v2';
 const ATTENDEES_KEY = 'viewme_attendees_v2';
 const BLOCKED_SLOTS_KEY = 'viewme_blocked_slots_v2';
@@ -192,12 +198,10 @@ export function subscribeToAdminSync(callback) {
     try {
       // 1. All Sessions
       const unsubSessions = onSnapshot(collection(db, 'sessions'), (snapshot) => {
-        if (!snapshot.empty) {
-          const remoteSessions = [];
-          snapshot.forEach((d) => remoteSessions.push(d.data()));
-          saveRawSessions(remoteSessions);
-          callback({ type: 'SESSIONS_SYNCED', payload: { sessions: remoteSessions } });
-        }
+        const remoteSessions = [];
+        snapshot.forEach((d) => remoteSessions.push(d.data()));
+        const merged = mergeRemoteSessions(remoteSessions);
+        callback({ type: 'SESSIONS_SYNCED', payload: { sessions: merged } });
       }, (err) => console.warn('Admin sessions sync warning:', err));
       unsubs.push(unsubSessions);
 
@@ -207,8 +211,8 @@ export function subscribeToAdminSync(callback) {
         snapshot.forEach((d) => {
           bookings[d.id] = d.data();
         });
-        saveRawBookings(bookings);
-        callback({ type: 'BOOKINGS_SYNCED', payload: { bookings } });
+        const merged = mergeRemoteBookings(bookings, true);
+        callback({ type: 'BOOKINGS_SYNCED', payload: { bookings: merged } });
       }, (err) => console.warn('Admin bookings sync warning:', err));
       unsubs.push(unsubBookings);
 
@@ -218,8 +222,8 @@ export function subscribeToAdminSync(callback) {
         snapshot.forEach((d) => {
           blocked[d.id] = d.data();
         });
-        saveRawBlockedSlots(blocked);
-        callback({ type: 'BLOCKED_SYNCED', payload: { blocked } });
+        const merged = mergeRemoteBlockedSlots(blocked, true);
+        callback({ type: 'BLOCKED_SYNCED', payload: { blocked: merged } });
       }, (err) => console.warn('Admin blocked slots sync warning:', err));
       unsubs.push(unsubBlocked);
 
@@ -229,8 +233,8 @@ export function subscribeToAdminSync(callback) {
         snapshot.forEach((d) => {
           attendees[d.id] = d.data();
         });
-        saveRawAttendees(attendees);
-        callback({ type: 'ATTENDEES_SYNCED', payload: { attendees } });
+        const merged = mergeRemoteAttendees(attendees, true);
+        callback({ type: 'ATTENDEES_SYNCED', payload: { attendees: merged } });
       }, (err) => {
         // Expected if unauthenticated
       });
@@ -238,13 +242,10 @@ export function subscribeToAdminSync(callback) {
 
       // 5. All Events
       const unsubEvents = onSnapshot(collection(db, 'events'), (snapshot) => {
-        if (!snapshot.empty) {
-          const remoteEvents = [];
-          snapshot.forEach((d) => remoteEvents.push(d.data()));
-          remoteEvents.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-          saveRawEvents(remoteEvents);
-          callback({ type: 'EVENTS_SYNCED', payload: { events: remoteEvents } });
-        }
+        const remoteEvents = [];
+        snapshot.forEach((d) => remoteEvents.push(d.data()));
+        const merged = mergeRemoteEvents(remoteEvents);
+        callback({ type: 'EVENTS_SYNCED', payload: { events: merged } });
       }, (err) => {
         // Expected if unauthenticated
       });
@@ -288,38 +289,45 @@ export async function fetchAllRemoteAdminData() {
       ]);
 
       if (!sessionsSnap.empty) {
-        const sessions = [];
-        sessionsSnap.forEach((d) => sessions.push(d.data()));
-        saveRawSessions(sessions);
+        const remoteSessions = [];
+        sessionsSnap.forEach((d) => remoteSessions.push(d.data()));
+        mergeRemoteSessions(remoteSessions);
       }
 
-      const bookings = {};
-      bookingsSnap.forEach((d) => {
-        bookings[d.id] = d.data();
-      });
-      saveRawBookings(bookings);
+      if (!bookingsSnap.empty) {
+        const bookings = {};
+        bookingsSnap.forEach((d) => {
+          bookings[d.id] = d.data();
+        });
+        mergeRemoteBookings(bookings, true);
+      }
 
-      const blocked = {};
-      blockedSnap.forEach((d) => {
-        blocked[d.id] = d.data();
-      });
-      saveRawBlockedSlots(blocked);
+      if (!blockedSnap.empty) {
+        const blocked = {};
+        blockedSnap.forEach((d) => {
+          blocked[d.id] = d.data();
+        });
+        mergeRemoteBlockedSlots(blocked, true);
+      }
 
       try {
         const attendeesSnap = await getDocs(collection(db, 'attendees'));
-        const attendees = {};
-        attendeesSnap.forEach((d) => {
-          attendees[d.id] = d.data();
-        });
-        saveRawAttendees(attendees);
+        if (!attendeesSnap.empty) {
+          const attendees = {};
+          attendeesSnap.forEach((d) => {
+            attendees[d.id] = d.data();
+          });
+          mergeRemoteAttendees(attendees, true);
+        }
       } catch (_) {}
 
       try {
         const eventsSnap = await getDocs(collection(db, 'events'));
-        const events = [];
-        eventsSnap.forEach((d) => events.push(d.data()));
-        events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-        saveRawEvents(events);
+        if (!eventsSnap.empty) {
+          const events = [];
+          eventsSnap.forEach((d) => events.push(d.data()));
+          mergeRemoteEvents(events);
+        }
       } catch (_) {}
     } catch (err) {
       console.warn('Error fetching remote admin data:', err);
@@ -395,13 +403,12 @@ export async function fetchRemoteSession(sessionId) {
 // -------------------------------------------------------------
 
 function getInitialSessions() {
+  if (isFirebaseConfigured()) {
+    return [];
+  }
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = tomorrow.toISOString().split('T')[0];
-
-  const dayAfter = new Date();
-  dayAfter.setDate(dayAfter.getDate() + 2);
-  const dayAfterStr = dayAfter.toISOString().split('T')[0];
 
   return [
     {
@@ -414,84 +421,20 @@ function getInitialSessions() {
       timezone: 'EST',
       description: 'Q&A session for participants.',
       createdAt: new Date().toISOString()
-    },
-    {
-      id: 'eng-panel-b',
-      title: 'Engineering Panel B — Final Round',
-      date: dayAfterStr,
-      startTime: '13:30',
-      endTime: '17:30',
-      slotDuration: 30,
-      timezone: 'EST',
-      description: 'Technical evaluation and deep-dive panel.',
-      createdAt: new Date().toISOString()
     }
   ];
 }
 
 function getInitialBookings() {
-  return {
-    'mkt-round2_slot_540_555': {
-      candidateName: 'Alex Rivera',
-      candidateCategory: 'A',
-      candidateEmail: 'alex.rivera@example.com',
-      candidatePhone: '+1 555-019-2834',
-      candidateContact: 'alex.rivera@example.com',
-      bookedAt: new Date(Date.now() - 3600000).toISOString()
-    }
-  };
+  return {};
 }
 
 function getInitialAttendees() {
-  return {
-    'mkt-round2_alex.rivera@example.com': {
-      id: 'mkt-round2_alex.rivera@example.com',
-      sessionId: 'mkt-round2',
-      name: 'Alex Rivera',
-      category: 'A',
-      email: 'alex.rivera@example.com',
-      phone: '+1 555-019-2834',
-      contact: 'alex.rivera@example.com',
-      editCount: 0,
-      device: 'Desktop',
-      firstCheckedInAt: new Date(Date.now() - 3700000).toISOString(),
-      lastSeenAt: new Date(Date.now() - 3600000).toISOString(),
-      status: 'booked',
-      bookedSlotId: 'slot_540_555'
-    }
-  };
+  return {};
 }
 
 function getInitialEvents() {
-  return [
-    {
-      id: 'evt_init_1',
-      type: 'SESSION_CREATED',
-      sessionId: 'mkt-round2',
-      sessionTitle: 'Q&A 15 min',
-      actor: 'Admin',
-      details: 'Created session with 15 min slots',
-      timestamp: new Date(Date.now() - 86400000).toISOString()
-    },
-    {
-      id: 'evt_init_2',
-      type: 'USER_CHECKED_IN',
-      sessionId: 'mkt-round2',
-      sessionTitle: 'Q&A 15 min',
-      actor: 'Alex Rivera',
-      details: 'Checked in via link (alex.rivera@example.com) on Desktop',
-      timestamp: new Date(Date.now() - 3700000).toISOString()
-    },
-    {
-      id: 'evt_init_3',
-      type: 'SLOT_BOOKED',
-      sessionId: 'mkt-round2',
-      sessionTitle: 'Q&A 15 min',
-      actor: 'Alex Rivera',
-      details: 'Reserved slot 09:00 AM – 09:15 AM',
-      timestamp: new Date(Date.now() - 3600000).toISOString()
-    }
-  ];
+  return [];
 }
 
 // -------------------------------------------------------------
@@ -562,6 +505,92 @@ function getRawEvents() {
 
 function saveRawEvents(events) {
   localStorage.setItem(EVENTS_KEY, JSON.stringify(events));
+}
+
+function getDeletedSessionIds() {
+  const data = localStorage.getItem(DELETED_SESSIONS_KEY);
+  if (!data) return new Set();
+  try { return new Set(JSON.parse(data)); } catch { return new Set(); }
+}
+
+function addDeletedSessionId(id) {
+  if (!id) return;
+  const deleted = getDeletedSessionIds();
+  deleted.add(id);
+  localStorage.setItem(DELETED_SESSIONS_KEY, JSON.stringify(Array.from(deleted)));
+}
+
+function removeDeletedSessionId(id) {
+  if (!id) return;
+  const deleted = getDeletedSessionIds();
+  if (deleted.has(id)) {
+    deleted.delete(id);
+    localStorage.setItem(DELETED_SESSIONS_KEY, JSON.stringify(Array.from(deleted)));
+  }
+}
+
+export function mergeRemoteSessions(remoteSessions = []) {
+  const deletedIds = getDeletedSessionIds();
+  const localSessions = getRawSessions();
+  const sessionMap = new Map();
+
+  // 1. Keep local sessions that were not deleted
+  localSessions.forEach((s) => {
+    if (s && s.id && !deletedIds.has(s.id)) {
+      sessionMap.set(s.id, s);
+    }
+  });
+
+  // 2. Merge / overlay remote sessions
+  remoteSessions.forEach((remoteS) => {
+    if (remoteS && remoteS.id && !deletedIds.has(remoteS.id)) {
+      sessionMap.set(remoteS.id, {
+        ...(sessionMap.get(remoteS.id) || {}),
+        ...remoteS
+      });
+    }
+  });
+
+  const merged = Array.from(sessionMap.values());
+  saveRawSessions(merged);
+  return merged;
+}
+
+export function mergeRemoteBookings(remoteBookings = {}, isFullSync = false) {
+  const localBookings = getRawBookings();
+  const merged = isFullSync ? { ...remoteBookings } : { ...localBookings, ...remoteBookings };
+  saveRawBookings(merged);
+  return merged;
+}
+
+export function mergeRemoteBlockedSlots(remoteBlocked = {}, isFullSync = false) {
+  const localBlocked = getRawBlockedSlots();
+  const merged = isFullSync ? { ...remoteBlocked } : { ...localBlocked, ...remoteBlocked };
+  saveRawBlockedSlots(merged);
+  return merged;
+}
+
+export function mergeRemoteAttendees(remoteAttendees = {}, isFullSync = false) {
+  const localAttendees = getRawAttendees();
+  const merged = isFullSync ? { ...remoteAttendees } : { ...localAttendees, ...remoteAttendees };
+  saveRawAttendees(merged);
+  return merged;
+}
+
+export function mergeRemoteEvents(remoteEvents = []) {
+  const localEvents = getRawEvents();
+  const eventMap = new Map();
+  localEvents.forEach((e) => {
+    if (e && e.id) eventMap.set(e.id, e);
+  });
+  remoteEvents.forEach((e) => {
+    if (e && e.id) eventMap.set(e.id, e);
+  });
+  const merged = Array.from(eventMap.values());
+  merged.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  if (merged.length > 500) merged.length = 500;
+  saveRawEvents(merged);
+  return merged;
 }
 
 // -------------------------------------------------------------
@@ -697,11 +726,36 @@ export function logoutAdmin() {
 // Sessions & Bookings Management
 // -------------------------------------------------------------
 
+/**
+ * Normalizes session days into a clean array of day definitions
+ */
+export function normalizeSessionDays(session) {
+  if (!session) return [];
+  if (session.days && Array.isArray(session.days) && session.days.length > 0) {
+    return session.days.map((d, idx) => ({
+      id: d.id || `day_${idx + 1}`,
+      date: d.date || session.date || '',
+      label: d.label || `Day ${idx + 1}`,
+      startTime: d.startTime || session.startTime || '09:00',
+      endTime: d.endTime || session.endTime || '16:00'
+    }));
+  }
+  return [
+    {
+      id: 'day_1',
+      date: session.date || '',
+      label: 'Day 1',
+      startTime: session.startTime || '09:00',
+      endTime: session.endTime || '16:00'
+    }
+  ];
+}
+
 function findBookingForSlot(bookings, sessionId, slot, categoryName) {
   const canonicalKey = `${sessionId}_${slot.id}`;
   if (bookings[canonicalKey]) return bookings[canonicalKey];
 
-  // Check by matching time & category across all booking records for this session
+  // Check by matching time, category, and day/date across all booking records for this session
   for (const [key, b] of Object.entries(bookings)) {
     if (!key.startsWith(`${sessionId}_`)) continue;
     if (!matchCategory(b.candidateCategory, categoryName)) continue;
@@ -709,13 +763,29 @@ function findBookingForSlot(bookings, sessionId, slot, categoryName) {
     // Check if slotId or parsed slotId matches
     const parsed = parseSlotId(b.slotId, b.candidateCategory || categoryName);
     if (parsed) {
-      if (parsed.canonicalId === slot.id || (parsed.startMinutes === slot.startMinutes && parsed.endMinutes === slot.endMinutes)) {
+      if (parsed.canonicalId === slot.id || parsed.rawId === slot.id) {
         return b;
+      }
+      // If dayId is present on both, ensure dayId matches
+      if (slot.dayId && parsed.dayId && slot.dayId !== parsed.dayId) {
+        continue;
+      }
+      // If slotDate is present on both, ensure date matches
+      if (slot.date && b.slotDate && slot.date !== b.slotDate) {
+        continue;
+      }
+      if (parsed.startMinutes === slot.startMinutes && parsed.endMinutes === slot.endMinutes) {
+        if (!slot.dayId || !parsed.dayId || slot.dayId === parsed.dayId) {
+          return b;
+        }
       }
     }
     // Check startMinutes if saved directly
     if (b.startMinutes !== undefined && b.startMinutes === slot.startMinutes) {
-      return b;
+      if ((!slot.date || !b.slotDate || slot.date === b.slotDate) &&
+          (!slot.dayId || !b.dayId || slot.dayId === b.dayId)) {
+        return b;
+      }
     }
   }
 
@@ -735,8 +805,18 @@ function findBlockedForSlot(blockedSlots, sessionId, slot, categoryName) {
   for (const [key, blk] of Object.entries(blockedSlots)) {
     if (!key.startsWith(`${sessionId}_`)) continue;
     const parsed = parseSlotId(blk.slotId, categoryName);
-    if (parsed && (parsed.canonicalId === slot.id || (parsed.startMinutes === slot.startMinutes && parsed.endMinutes === slot.endMinutes))) {
-      return blk;
+    if (parsed) {
+      if (parsed.canonicalId === slot.id || parsed.rawId === slot.id) {
+        return blk;
+      }
+      if (slot.dayId && parsed.dayId && slot.dayId !== parsed.dayId) {
+        continue;
+      }
+      if (parsed.startMinutes === slot.startMinutes && parsed.endMinutes === slot.endMinutes) {
+        if (!slot.dayId || !parsed.dayId || slot.dayId === parsed.dayId) {
+          return blk;
+        }
+      }
     }
   }
 
@@ -756,32 +836,48 @@ export function getAllSessions() {
   return sessions.map((session) => {
     const duration = Number(session.slotDuration) || 15;
     const categories = session.categories && session.categories.length > 0 ? session.categories : ['Category A', 'Category B', 'Category C'];
+    const days = normalizeSessionDays(session);
+    const eventType = session.eventType || (days.length > 1 ? 'multi' : 'single');
     
     let totalSlots = 0;
     let bookedCount = 0;
     let blockedCount = 0;
+    let attendedCount = 0;
 
-    categories.forEach((cat) => {
-      const slots = generateTimeSlots(session.startTime, session.endTime, duration, cat);
-      totalSlots += slots.length;
-      slots.forEach((slot) => {
-        const isBooked = Boolean(findBookingForSlot(bookings, session.id, slot, cat));
-        const isBlocked = Boolean(findBlockedForSlot(blockedSlots, session.id, slot, cat));
-        if (isBooked) {
-          bookedCount++;
-        } else if (isBlocked) {
-          blockedCount++;
-        }
+    days.forEach((day) => {
+      categories.forEach((cat) => {
+        const slots = generateTimeSlots(
+          day.startTime || session.startTime || '09:00',
+          day.endTime || session.endTime || '16:00',
+          duration,
+          cat,
+          days.length > 1 ? day : null
+        );
+        totalSlots += slots.length;
+        slots.forEach((slot) => {
+          const booking = findBookingForSlot(bookings, session.id, slot, cat);
+          const isBlocked = Boolean(findBlockedForSlot(blockedSlots, session.id, slot, cat));
+          if (booking) {
+            bookedCount++;
+            if (booking.attendanceStatus === 'attended') attendedCount++;
+          } else if (isBlocked) {
+            blockedCount++;
+          }
+        });
       });
     });
 
     return {
       ...session,
+      eventType,
+      days,
+      date: session.date || days[0]?.date || '',
       categories,
       slotDuration: duration,
       totalSlots: totalSlots,
       bookedCount: bookedCount,
       blockedCount: blockedCount,
+      attendedCount: attendedCount,
       availableCount: Math.max(0, totalSlots - bookedCount - blockedCount),
       percentBooked: totalSlots > 0 ? Math.round((bookedCount / totalSlots) * 100) : 0
     };
@@ -795,56 +891,100 @@ export function getSessionDetails(sessionId, selectedCategory = null) {
 
   const duration = Number(session.slotDuration) || 15;
   const categories = session.categories && session.categories.length > 0 ? session.categories : ['Category A', 'Category B', 'Category C'];
+  const days = normalizeSessionDays(session);
+  const eventType = session.eventType || (days.length > 1 ? 'multi' : 'single');
+  const isMultiDay = days.length > 1;
+
   const bookings = getRawBookings();
   const blockedSlots = getRawBlockedSlots();
 
   let totalSlots = 0;
   let bookedCount = 0;
   let blockedCount = 0;
+  let attendedCount = 0;
   const allSlots = [];
   const categorySlots = {};
+  const daySlots = {};
+
+  days.forEach((day) => {
+    daySlots[day.id] = { all: [] };
+    categories.forEach((cat) => {
+      daySlots[day.id][cat] = [];
+    });
+  });
 
   categories.forEach((cat) => {
-    const catRawSlots = generateTimeSlots(session.startTime, session.endTime, duration, cat);
     categorySlots[cat] = [];
+  });
 
-    catRawSlots.forEach((slot) => {
-      totalSlots++;
-      const booking = findBookingForSlot(bookings, session.id, slot, cat);
-      const blockedRecord = findBlockedForSlot(blockedSlots, session.id, slot, cat);
+  days.forEach((day) => {
+    categories.forEach((cat) => {
+      const catRawSlots = generateTimeSlots(
+        day.startTime || session.startTime || '09:00',
+        day.endTime || session.endTime || '16:00',
+        duration,
+        cat,
+        isMultiDay ? day : null
+      );
 
-      let enrichedSlot;
-      if (booking) {
-        bookedCount++;
-        enrichedSlot = {
-          ...slot,
-          isBooked: true,
-          isBlocked: false,
-          booking: {
-            ...booking,
-            candidateCategory: cat // Ensure clean category alignment
+      catRawSlots.forEach((slot) => {
+        totalSlots++;
+        const booking = findBookingForSlot(bookings, session.id, slot, cat);
+        const blockedRecord = findBlockedForSlot(blockedSlots, session.id, slot, cat);
+
+        let enrichedSlot;
+        if (booking) {
+          bookedCount++;
+          if (booking.attendanceStatus === 'attended') attendedCount++;
+          enrichedSlot = {
+            ...slot,
+            date: slot.date || day.date,
+            dayId: slot.dayId || day.id,
+            dayLabel: slot.dayLabel || day.label,
+            isBooked: true,
+            isBlocked: false,
+            booking: {
+              ...booking,
+              slotDate: booking.slotDate || slot.date || day.date,
+              dayId: booking.dayId || slot.dayId || day.id,
+              candidateCategory: cat,
+              attendanceStatus: booking.attendanceStatus || 'not_marked'
+            }
+          };
+        } else if (blockedRecord) {
+          blockedCount++;
+          enrichedSlot = {
+            ...slot,
+            date: slot.date || day.date,
+            dayId: slot.dayId || day.id,
+            dayLabel: slot.dayLabel || day.label,
+            isBooked: false,
+            isBlocked: true,
+            booking: null,
+            blockedInfo: blockedRecord
+          };
+        } else {
+          enrichedSlot = {
+            ...slot,
+            date: slot.date || day.date,
+            dayId: slot.dayId || day.id,
+            dayLabel: slot.dayLabel || day.label,
+            isBooked: false,
+            isBlocked: false,
+            booking: null
+          };
+        }
+
+        categorySlots[cat].push(enrichedSlot);
+        allSlots.push(enrichedSlot);
+
+        if (daySlots[day.id]) {
+          daySlots[day.id].all.push(enrichedSlot);
+          if (daySlots[day.id][cat]) {
+            daySlots[day.id][cat].push(enrichedSlot);
           }
-        };
-      } else if (blockedRecord) {
-        blockedCount++;
-        enrichedSlot = {
-          ...slot,
-          isBooked: false,
-          isBlocked: true,
-          booking: null,
-          blockedInfo: blockedRecord
-        };
-      } else {
-        enrichedSlot = {
-          ...slot,
-          isBooked: false,
-          isBlocked: false,
-          booking: null
-        };
-      }
-
-      categorySlots[cat].push(enrichedSlot);
-      allSlots.push(enrichedSlot);
+        }
+      });
     });
   });
 
@@ -855,20 +995,124 @@ export function getSessionDetails(sessionId, selectedCategory = null) {
 
   return {
     ...session,
+    eventType,
+    days,
+    date: session.date || days[0]?.date || '',
     categories,
     slotDuration: duration,
     slots: slotsToReturn,
     allSlots: allSlots,
     categorySlots: categorySlots,
+    daySlots: daySlots,
     totalSlots: totalSlots,
     bookedCount: bookedCount,
     blockedCount: blockedCount,
+    attendedCount: attendedCount,
     availableCount: Math.max(0, totalSlots - bookedCount - blockedCount),
     percentBooked: totalSlots > 0 ? Math.round((bookedCount / totalSlots) * 100) : 0
   };
 }
 
-export function toggleSlotBlocked(sessionId, slotId, reason = 'Unavailable') {
+// -------------------------------------------------------------
+// Attendance Tracking (Admin-Only)
+// -------------------------------------------------------------
+
+/**
+ * Toggle attendance status for a booked slot.
+ * @param {string} sessionId
+ * @param {string} slotId
+ * @param {'not_marked'|'attended'|'no_show'} status
+ */
+export async function updateBookingAttendance(sessionId, slotId, status) {
+  const bookings = getRawBookings();
+  const key = `${sessionId}_${slotId}`;
+
+  // Find the booking (try direct key, canonical key, then scan for matching slot)
+  let bookingKey = null;
+  let targetBooking = null;
+
+  if (bookings[key]) {
+    bookingKey = key;
+    targetBooking = bookings[key];
+  } else {
+    for (const [k, b] of Object.entries(bookings)) {
+      if (!k.startsWith(`${sessionId}_`)) continue;
+      if (b.slotId === slotId || k === key) {
+        bookingKey = k;
+        targetBooking = b;
+        break;
+      }
+      const parsedSlot = parseSlotId(slotId, b.candidateCategory);
+      const canonical = parsedSlot?.canonicalId || slotId;
+      if (b.slotId === canonical || k === `${sessionId}_${canonical}`) {
+        bookingKey = k;
+        targetBooking = b;
+        break;
+      }
+    }
+  }
+
+  if (!bookingKey || !targetBooking) {
+    return { success: false, error: 'Booking not found.' };
+  }
+
+  const updatedBooking = {
+    ...targetBooking,
+    attendanceStatus: status,
+    attendanceMarkedAt: new Date().toISOString()
+  };
+  bookings[bookingKey] = updatedBooking;
+  saveRawBookings(bookings);
+
+  // Canonical Firestore document ID
+  const firestoreDocId = targetBooking.slotId ? `${sessionId}_${targetBooking.slotId}` : bookingKey;
+
+  // Persist to Firestore
+  if (isFirebaseConfigured() && db) {
+    try {
+      await setDoc(doc(db, 'bookings', firestoreDocId), {
+        attendanceStatus: status,
+        attendanceMarkedAt: updatedBooking.attendanceMarkedAt
+      }, { merge: true });
+    } catch (err) {
+      console.warn('Could not update attendance in Firestore:', err);
+    }
+  }
+
+  // Also keep attendee record in sync if present
+  const attendeeIdentifier = (targetBooking.candidateEmail || targetBooking.candidatePhone || targetBooking.candidateContact || targetBooking.candidateName || '').toLowerCase().trim();
+  const attKey = `${sessionId}_${attendeeIdentifier}`;
+  const attendees = getRawAttendees();
+  if (attendees[attKey]) {
+    attendees[attKey] = {
+      ...attendees[attKey],
+      attendanceStatus: status,
+      attendanceMarkedAt: updatedBooking.attendanceMarkedAt
+    };
+    saveRawAttendees(attendees);
+    if (isFirebaseConfigured() && db) {
+      setDoc(doc(db, 'attendees', attKey), {
+        attendanceStatus: status,
+        attendanceMarkedAt: updatedBooking.attendanceMarkedAt
+      }, { merge: true }).catch(() => {});
+    }
+  }
+
+  const sessions = getRawSessions();
+  const session = sessions.find(s => s.id === sessionId);
+  logActivityEvent({
+    type: 'ATTENDANCE_UPDATED',
+    sessionId,
+    sessionTitle: session?.title || 'Session',
+    actor: 'Admin',
+    details: `Marked ${targetBooking.candidateName || 'candidate'} as "${status === 'attended' ? 'Attended' : status === 'no_show' ? 'No-show' : 'Not marked'}" for slot ${slotId}`
+  });
+
+  broadcast('ATTENDANCE_UPDATED', { sessionId, slotId, status });
+  return { success: true, status };
+}
+
+export async function toggleSlotBlocked(sessionId, slotId, reason = 'Unavailable') {
   const blockedSlots = getRawBlockedSlots();
   const sessions = getRawSessions();
   const session = sessions.find((s) => s.id === sessionId);
@@ -880,7 +1124,11 @@ export function toggleSlotBlocked(sessionId, slotId, reason = 'Unavailable') {
     saveRawBlockedSlots(blockedSlots);
 
     if (isFirebaseConfigured() && db) {
-      deleteDoc(doc(db, 'blocked_slots', key)).catch(() => {});
+      try {
+        await deleteDoc(doc(db, 'blocked_slots', key));
+      } catch (err) {
+        console.warn('Could not unblock slot in Firestore:', err);
+      }
     }
 
     logActivityEvent({
@@ -905,7 +1153,11 @@ export function toggleSlotBlocked(sessionId, slotId, reason = 'Unavailable') {
     saveRawBlockedSlots(blockedSlots);
 
     if (isFirebaseConfigured() && db) {
-      setDoc(doc(db, 'blocked_slots', key), blockRecord).catch(() => {});
+      try {
+        await setDoc(doc(db, 'blocked_slots', key), blockRecord);
+      } catch (err) {
+        console.warn('Could not block slot in Firestore:', err);
+      }
     }
 
     logActivityEvent({
@@ -921,9 +1173,11 @@ export function toggleSlotBlocked(sessionId, slotId, reason = 'Unavailable') {
   }
 }
 
-export function createNewSession({
+export async function createNewSession({
   title,
+  eventType = 'single',
   date,
+  days = null,
   startTime = '09:00',
   endTime = '16:00',
   slotDuration = 15,
@@ -934,14 +1188,40 @@ export function createNewSession({
 }) {
   const sessions = getRawSessions();
   const id = generateSessionId();
+  removeDeletedSessionId(id);
   const validCategories = Array.isArray(categories) && categories.length > 0
     ? categories.map((c) => c.trim()).filter(Boolean)
     : ['Category A', 'Category B', 'Category C'];
 
+  let validDays = [];
+  if (eventType === 'multi' && Array.isArray(days) && days.length > 0) {
+    validDays = days.map((d, idx) => ({
+      id: d.id || `day_${idx + 1}`,
+      date: d.date,
+      label: d.label || `Day ${idx + 1}`,
+      startTime: d.startTime || startTime,
+      endTime: d.endTime || endTime
+    }));
+  } else {
+    validDays = [
+      {
+        id: 'day_1',
+        date: date || new Date().toISOString().split('T')[0],
+        label: 'Day 1',
+        startTime: startTime,
+        endTime: endTime
+      }
+    ];
+  }
+
+  const primaryDate = validDays[0]?.date || date || new Date().toISOString().split('T')[0];
+
   const newSession = {
     id,
     title: title.trim(),
-    date,
+    eventType: validDays.length > 1 ? 'multi' : 'single',
+    date: primaryDate,
+    days: validDays,
     startTime,
     endTime,
     slotDuration: Number(slotDuration) || 15,
@@ -952,29 +1232,35 @@ export function createNewSession({
     createdAt: new Date().toISOString()
   };
 
+  // Direct Firestore write as primary persistence
+  if (isFirebaseConfigured() && db) {
+    try {
+      await setDoc(doc(db, 'sessions', newSession.id), newSession);
+    } catch (err) {
+      console.warn('Could not sync session to Firestore:', err);
+    }
+  }
+
   sessions.unshift(newSession);
   saveRawSessions(sessions);
 
-  // Firestore sync
-  if (isFirebaseConfigured() && db) {
-    setDoc(doc(db, 'sessions', newSession.id), newSession).catch((err) => {
-      console.warn('Could not sync session to Firestore:', err);
-    });
-  }
+  const daysSummary = validDays.length > 1
+    ? `${validDays.length} days (${validDays.map((d) => d.date).join(', ')})`
+    : `on ${primaryDate}`;
 
   logActivityEvent({
     type: 'SESSION_CREATED',
     sessionId: newSession.id,
     sessionTitle: newSession.title,
     actor: 'Admin',
-    details: `Created session on ${date} (${startTime}–${endTime}, ${newSession.slotDuration}m slots, ${validCategories.length} categories: ${validCategories.join(', ')})`
+    details: `Created ${newSession.eventType} session ${daysSummary} (${startTime}–${endTime}, ${newSession.slotDuration}m slots, ${validCategories.length} categories: ${validCategories.join(', ')})`
   });
 
   broadcast('SESSION_CREATED', { session: newSession });
   return newSession;
 }
 
-export function updateSessionDetails(sessionId, updates = {}) {
+export async function updateSessionDetails(sessionId, updates = {}) {
   const sessions = getRawSessions();
   const index = sessions.findIndex((s) => s.id === sessionId);
   if (index === -1) return { success: false, error: 'Session not found.' };
@@ -984,10 +1270,36 @@ export function updateSessionDetails(sessionId, updates = {}) {
     ? updates.categories.map((c) => c.trim()).filter(Boolean)
     : prev.categories || ['Category A', 'Category B', 'Category C'];
 
+  let validDays = prev.days || normalizeSessionDays(prev);
+  if (updates.days && Array.isArray(updates.days) && updates.days.length > 0) {
+    validDays = updates.days.map((d, idx) => ({
+      id: d.id || `day_${idx + 1}`,
+      date: d.date,
+      label: d.label || `Day ${idx + 1}`,
+      startTime: d.startTime || updates.startTime || prev.startTime || '09:00',
+      endTime: d.endTime || updates.endTime || prev.endTime || '16:00'
+    }));
+  } else if (updates.date) {
+    validDays = [
+      {
+        id: 'day_1',
+        date: updates.date,
+        label: 'Day 1',
+        startTime: updates.startTime || prev.startTime || '09:00',
+        endTime: updates.endTime || prev.endTime || '16:00'
+      }
+    ];
+  }
+
+  const primaryDate = validDays[0]?.date || updates.date || prev.date;
+  const eventType = updates.eventType || (validDays.length > 1 ? 'multi' : 'single');
+
   const updated = {
     ...prev,
     ...(updates.title !== undefined && { title: updates.title.trim() }),
-    ...(updates.date !== undefined && { date: updates.date }),
+    eventType,
+    date: primaryDate,
+    days: validDays,
     ...(updates.startTime !== undefined && { startTime: updates.startTime }),
     ...(updates.endTime !== undefined && { endTime: updates.endTime }),
     ...(updates.slotDuration !== undefined && { slotDuration: Number(updates.slotDuration) || prev.slotDuration }),
@@ -998,28 +1310,31 @@ export function updateSessionDetails(sessionId, updates = {}) {
     updatedAt: new Date().toISOString()
   };
 
+  // Direct Firestore write
+  if (isFirebaseConfigured() && db) {
+    try {
+      await setDoc(doc(db, 'sessions', sessionId), updated, { merge: true });
+    } catch (err) {
+      console.warn('Could not sync updated session details to Firestore:', err);
+    }
+  }
+
   sessions[index] = updated;
   saveRawSessions(sessions);
-
-  if (isFirebaseConfigured() && db) {
-    setDoc(doc(db, 'sessions', sessionId), updated, { merge: true }).catch((err) => {
-      console.warn('Could not sync updated session details to Firestore:', err);
-    });
-  }
 
   logActivityEvent({
     type: 'SESSION_UPDATED',
     sessionId,
     sessionTitle: updated.title,
     actor: 'Admin',
-    details: `Updated session settings (Title: "${updated.title}", Date: ${updated.date}, Time: ${updated.startTime}–${updated.endTime} ${updated.timezone})`
+    details: `Updated session settings (Title: "${updated.title}", EventType: ${updated.eventType}, Dates: ${validDays.map((d) => d.date).join(', ')}, Time: ${updated.startTime}–${updated.endTime} ${updated.timezone})`
   });
 
   broadcast('SESSION_UPDATED', { sessionId, session: updated });
   return { success: true, session: updated };
 }
 
-export function updateSessionCategories(sessionId, categories) {
+export async function updateSessionCategories(sessionId, categories) {
   const sessions = getRawSessions();
   const index = sessions.findIndex((s) => s.id === sessionId);
   if (index === -1) return { success: false, error: 'Session not found.' };
@@ -1034,13 +1349,15 @@ export function updateSessionCategories(sessionId, categories) {
     updatedAt: new Date().toISOString()
   };
 
-  saveRawSessions(sessions);
-
   if (isFirebaseConfigured() && db) {
-    setDoc(doc(db, 'sessions', sessionId), sessions[index], { merge: true }).catch((err) => {
+    try {
+      await setDoc(doc(db, 'sessions', sessionId), sessions[index], { merge: true });
+    } catch (err) {
       console.warn('Could not sync updated categories to Firestore:', err);
-    });
+    }
   }
+
+  saveRawSessions(sessions);
 
   logActivityEvent({
     type: 'SESSION_UPDATED',
@@ -1054,7 +1371,7 @@ export function updateSessionCategories(sessionId, categories) {
   return { success: true, session: sessions[index] };
 }
 
-export function updateSessionMeetingLink(sessionId, meetingLink) {
+export async function updateSessionMeetingLink(sessionId, meetingLink) {
   const sessions = getRawSessions();
   const index = sessions.findIndex((s) => s.id === sessionId);
   if (index === -1) return { success: false, error: 'Session not found.' };
@@ -1066,13 +1383,15 @@ export function updateSessionMeetingLink(sessionId, meetingLink) {
     updatedAt: new Date().toISOString()
   };
 
-  saveRawSessions(sessions);
-
   if (isFirebaseConfigured() && db) {
-    setDoc(doc(db, 'sessions', sessionId), sessions[index], { merge: true }).catch((err) => {
+    try {
+      await setDoc(doc(db, 'sessions', sessionId), sessions[index], { merge: true });
+    } catch (err) {
       console.warn('Could not sync updated session meeting link to Firestore:', err);
-    });
+    }
   }
+
+  saveRawSessions(sessions);
 
   logActivityEvent({
     type: 'SESSION_UPDATED',
@@ -1086,7 +1405,7 @@ export function updateSessionMeetingLink(sessionId, meetingLink) {
   return { success: true, session: sessions[index] };
 }
 
-export function updateSessionDescription(sessionId, description) {
+export async function updateSessionDescription(sessionId, description) {
   const sessions = getRawSessions();
   const index = sessions.findIndex((s) => s.id === sessionId);
   if (index === -1) return { success: false, error: 'Session not found.' };
@@ -1098,13 +1417,15 @@ export function updateSessionDescription(sessionId, description) {
     updatedAt: new Date().toISOString()
   };
 
-  saveRawSessions(sessions);
-
   if (isFirebaseConfigured() && db) {
-    setDoc(doc(db, 'sessions', sessionId), sessions[index], { merge: true }).catch((err) => {
+    try {
+      await setDoc(doc(db, 'sessions', sessionId), sessions[index], { merge: true });
+    } catch (err) {
       console.warn('Could not sync updated session description to Firestore:', err);
-    });
+    }
   }
+
+  saveRawSessions(sessions);
 
   logActivityEvent({
     type: 'SESSION_UPDATED',
@@ -1118,37 +1439,52 @@ export function updateSessionDescription(sessionId, description) {
   return { success: true, session: sessions[index] };
 }
 
-export function deleteSession(sessionId) {
+export async function deleteSession(sessionId) {
+  addDeletedSessionId(sessionId);
   let sessions = getRawSessions();
   const sessionToDelete = sessions.find((s) => s.id === sessionId);
   sessions = sessions.filter((s) => s.id !== sessionId);
   saveRawSessions(sessions);
 
-  // Clean up bookings
+  // Clean up bookings locally
   const bookings = getRawBookings();
   const updatedBookings = {};
+  const bookingKeysToDelete = [];
   Object.keys(bookings).forEach((key) => {
     if (!key.startsWith(`${sessionId}_`)) {
       updatedBookings[key] = bookings[key];
+    } else {
+      bookingKeysToDelete.push(key);
     }
   });
   saveRawBookings(updatedBookings);
 
-  // Clean up blocked slots
+  // Clean up blocked slots locally
   const blockedSlots = getRawBlockedSlots();
   const updatedBlockedSlots = {};
+  const blockedKeysToDelete = [];
   Object.keys(blockedSlots).forEach((key) => {
     if (!key.startsWith(`${sessionId}_`)) {
       updatedBlockedSlots[key] = blockedSlots[key];
+    } else {
+      blockedKeysToDelete.push(key);
     }
   });
   saveRawBlockedSlots(updatedBlockedSlots);
 
-  // Firestore sync
+  // Direct Firestore delete for session and related collections
   if (isFirebaseConfigured() && db) {
-    deleteDoc(doc(db, 'sessions', sessionId)).catch((err) => {
+    try {
+      await deleteDoc(doc(db, 'sessions', sessionId));
+      bookingKeysToDelete.forEach((bKey) => {
+        deleteDoc(doc(db, 'bookings', bKey)).catch(() => {});
+      });
+      blockedKeysToDelete.forEach((blkKey) => {
+        deleteDoc(doc(db, 'blocked_slots', blkKey)).catch(() => {});
+      });
+    } catch (err) {
       console.warn('Could not delete session from Firestore:', err);
-    });
+    }
   }
 
   logActivityEvent({
@@ -1167,7 +1503,7 @@ export function deleteSession(sessionId) {
 // Attendee Check-In Recording
 // -------------------------------------------------------------
 
-export function recordSessionAttendee(sessionId, { name, category = 'A', email = '', phone = '', contact = '' }) {
+export async function recordSessionAttendee(sessionId, { name, category = 'A', email = '', phone = '', contact = '', isTester = false }) {
   const attendees = getRawAttendees();
   const sessions = getRawSessions();
   const session = sessions.find((s) => s.id === sessionId);
@@ -1193,8 +1529,18 @@ export function recordSessionAttendee(sessionId, { name, category = 'A', email =
     firstCheckedInAt: existing ? existing.firstCheckedInAt : now,
     lastSeenAt: now,
     status: existing ? existing.status : 'checked_in',
-    bookedSlotId: existing ? existing.bookedSlotId : null
+    bookedSlotId: existing ? existing.bookedSlotId : null,
+    isTester: isTester || existing?.isTester || false
   };
+
+  // Direct Firestore write
+  if (isFirebaseConfigured() && db) {
+    try {
+      await setDoc(doc(db, 'attendees', key), attendeeRecord, { merge: true });
+    } catch (err) {
+      console.warn('Could not sync attendee to Firestore:', err);
+    }
+  }
 
   attendees[key] = attendeeRecord;
   saveRawAttendees(attendees);
@@ -1208,13 +1554,6 @@ export function recordSessionAttendee(sessionId, { name, category = 'A', email =
     editCount: attendeeRecord.editCount,
     slotChangeCount: attendeeRecord.slotChangeCount
   });
-
-  // Firestore sync
-  if (isFirebaseConfigured() && db) {
-    setDoc(doc(db, 'attendees', key), attendeeRecord, { merge: true }).catch((err) => {
-      console.warn('Could not sync attendee to Firestore:', err);
-    });
-  }
 
   logActivityEvent({
     type: 'USER_CHECKED_IN',
@@ -1247,8 +1586,8 @@ export function getSessionAttendees(sessionId) {
           (
             (att.email && slot.booking.candidateEmail && slot.booking.candidateEmail.toLowerCase() === att.email.toLowerCase()) ||
             (att.phone && slot.booking.candidatePhone && slot.booking.candidatePhone.replace(/\D/g, '') === att.phone.replace(/\D/g, '')) ||
-            (slot.booking.candidateContact && slot.booking.candidateContact.toLowerCase() === att.contact.toLowerCase()) ||
-            (slot.booking.candidateName && slot.booking.candidateName.toLowerCase() === att.name.toLowerCase())
+            (att.contact && slot.booking.candidateContact && slot.booking.candidateContact.toLowerCase() === att.contact.toLowerCase()) ||
+            (att.name && slot.booking.candidateName && slot.booking.candidateName.toLowerCase() === att.name.toLowerCase())
           )
         ) {
           currentBooking = slot;
@@ -1332,8 +1671,8 @@ export function getAllAttendees() {
   // Also include from bookings
   const bookings = getRawBookings();
   Object.entries(bookings).forEach(([key, b]) => {
-    const [sessionId] = key.split('_');
-    const session = sessionMap[sessionId || b.sessionId];
+    const bookingSessionId = b.sessionId || key.substring(0, key.lastIndexOf('_slot_'));
+    const session = sessionMap[bookingSessionId];
     if (session) {
       const dedupe = `${session.id}_${(b.candidateEmail || b.candidatePhone || b.candidateName).toLowerCase()}`;
       if (!seenKeys.has(dedupe)) {
@@ -1368,6 +1707,7 @@ export function checkSlotChangeEligibility(sessionId, slotId, participantProfile
   const sessions = getRawSessions();
   const session = sessions.find((s) => s.id === sessionId);
   const attendees = getRawAttendees();
+  const bookings = getRawBookings();
 
   const normalizedEmail = (participantProfile?.email || '').toLowerCase();
   const normalizedContact = (participantProfile?.contact || '').toLowerCase();
@@ -1391,10 +1731,22 @@ export function checkSlotChangeEligibility(sessionId, slotId, participantProfile
     };
   }
 
-  // Rule 2: Minimum 3 Hours Before Meeting Start Time
+  // Rule 2: Minimum 3 Hours Before Meeting Start Time (evaluated on the slot's specific day date)
   if (session && slotId) {
-    const isWithin3Hours = isSlotWithinCutoff(session.date, slotId, 3);
-    const hoursRemaining = getHoursUntilSlot(session.date, slotId);
+    let slotDate = session.date;
+    const days = normalizeSessionDays(session);
+    const parsed = parseSlotId(slotId);
+    if (parsed && parsed.dayId) {
+      const matchDay = days.find((d) => d.id === parsed.dayId);
+      if (matchDay && matchDay.date) slotDate = matchDay.date;
+    }
+    const booking = bookings[`${sessionId}_${slotId}`];
+    if (booking && booking.slotDate) {
+      slotDate = booking.slotDate;
+    }
+
+    const isWithin3Hours = isSlotWithinCutoff(slotDate, slotId, 3);
+    const hoursRemaining = getHoursUntilSlot(slotDate, slotId);
 
     if (isWithin3Hours) {
       if (hoursRemaining <= 0) {
@@ -1443,10 +1795,22 @@ export async function bookSlot(sessionId, slotId, { candidateName, candidateCont
   const session = sessions.find((s) => s.id === sessionId);
   const categories = session?.categories || ['Category A', 'Category B', 'Category C'];
   const resolvedCategory = resolveCategoryInSession(categories, candidateCategory);
+  const days = normalizeSessionDays(session);
 
   const parsed = parseSlotId(slotId, resolvedCategory);
   const canonicalSlotId = parsed ? parsed.canonicalId : slotId;
   const key = `${sessionId}_${canonicalSlotId}`;
+
+  // Find slot date & dayId
+  let slotDate = session?.date;
+  let dayId = parsed?.dayId || null;
+  if (dayId) {
+    const matchDay = days.find((d) => d.id === dayId);
+    if (matchDay && matchDay.date) slotDate = matchDay.date;
+  } else if (days.length > 0) {
+    slotDate = days[0].date;
+    dayId = days[0].id;
+  }
 
   // Guard: Single booking per candidate (check existing bookings in session)
   const normalizedName = candidateName.trim().toLowerCase();
@@ -1462,7 +1826,7 @@ export async function bookSlot(sessionId, slotId, { candidateName, candidateCont
       const bCleanPhone = (b.candidatePhone || '').replace(/\D/g, '');
 
       const isSameEmail = normalizedEmail && bEmail && normalizedEmail === bEmail;
-      const isSamePhone = cleanPhone && cleanPhone.length >= 7 && bCleanPhone && (cleanPhone === bCleanPhone || cleanPhone.endsWith(bCleanPhone) || bCleanPhone.endsWith(cleanPhone));
+      const isSamePhone = cleanPhone && cleanPhone.length >= 10 && bCleanPhone && bCleanPhone.length >= 10 && cleanPhone === bCleanPhone;
       const isSameContact = normalizedContact && bContact && normalizedContact === bContact;
       const isSameName = normalizedName && bName && normalizedName === bName;
 
@@ -1479,7 +1843,7 @@ export async function bookSlot(sessionId, slotId, { candidateName, candidateCont
   const blockedSlots = getRawBlockedSlots();
   const isBlocked = Boolean(
     blockedSlots[key] ||
-    findBlockedForSlot(blockedSlots, sessionId, { id: canonicalSlotId, baseId: parsed?.baseId, startMinutes: parsed?.startMinutes, endMinutes: parsed?.endMinutes }, resolvedCategory)
+    findBlockedForSlot(blockedSlots, sessionId, { id: canonicalSlotId, baseId: parsed?.baseId, dayId, date: slotDate, startMinutes: parsed?.startMinutes, endMinutes: parsed?.endMinutes }, resolvedCategory)
   );
 
   if (isBlocked) {
@@ -1490,7 +1854,7 @@ export async function bookSlot(sessionId, slotId, { candidateName, candidateCont
     };
   }
 
-  const existingBooking = bookings[key] || findBookingForSlot(bookings, sessionId, { id: canonicalSlotId, baseId: parsed?.baseId, startMinutes: parsed?.startMinutes, endMinutes: parsed?.endMinutes }, resolvedCategory);
+  const existingBooking = bookings[key] || findBookingForSlot(bookings, sessionId, { id: canonicalSlotId, baseId: parsed?.baseId, dayId, date: slotDate, startMinutes: parsed?.startMinutes, endMinutes: parsed?.endMinutes }, resolvedCategory);
   if (existingBooking) {
     logActivityEvent({
       type: 'BOOKING_CONFLICT',
@@ -1509,6 +1873,8 @@ export async function bookSlot(sessionId, slotId, { candidateName, candidateCont
   const bookingRecord = {
     sessionId,
     slotId: canonicalSlotId,
+    dayId: dayId,
+    slotDate: slotDate,
     candidateName: candidateName.trim(),
     candidateContact: candidateContact.trim(),
     candidateCategory: resolvedCategory,
@@ -1591,7 +1957,7 @@ export async function bookSlot(sessionId, slotId, { candidateName, candidateCont
     sessionId: sessionId,
     sessionTitle: session?.title || 'Session',
     actor: candidateName.trim(),
-    details: `Confirmed slot reservation for Category ${bookingRecord.candidateCategory} (${bookingRecord.candidateEmail || bookingRecord.candidateContact})`
+    details: `Confirmed slot reservation on ${slotDate || session?.date} for Category ${bookingRecord.candidateCategory} (${bookingRecord.candidateEmail || bookingRecord.candidateContact})`
   });
 
   broadcast('SLOT_BOOKED', { sessionId, slotId: canonicalSlotId, booking: bookingRecord });
@@ -1623,6 +1989,7 @@ export async function rescheduleBooking(sessionId, oldSlotId, newSlotId, candida
   const session = sessions.find((s) => s.id === sessionId);
   const categories = session?.categories || ['Category A', 'Category B', 'Category C'];
   const resolvedCategory = resolveCategoryInSession(categories, candidateProfile?.category);
+  const days = normalizeSessionDays(session);
 
   const parsedOld = parseSlotId(oldSlotId, resolvedCategory);
   const parsedNew = parseSlotId(newSlotId, resolvedCategory);
@@ -1631,10 +1998,20 @@ export async function rescheduleBooking(sessionId, oldSlotId, newSlotId, candida
 
   const newKey = `${sessionId}_${canonicalNewSlotId}`;
 
+  let newSlotDate = session?.date;
+  let newDayId = parsedNew?.dayId || null;
+  if (newDayId) {
+    const matchDay = days.find((d) => d.id === newDayId);
+    if (matchDay && matchDay.date) newSlotDate = matchDay.date;
+  } else if (days.length > 0) {
+    newSlotDate = days[0].date;
+    newDayId = days[0].id;
+  }
+
   // Check if new slot is blocked
   const isNewBlocked = Boolean(
     blockedSlots[newKey] ||
-    findBlockedForSlot(blockedSlots, sessionId, { id: canonicalNewSlotId, baseId: parsedNew?.baseId, startMinutes: parsedNew?.startMinutes, endMinutes: parsedNew?.endMinutes }, resolvedCategory)
+    findBlockedForSlot(blockedSlots, sessionId, { id: canonicalNewSlotId, baseId: parsedNew?.baseId, dayId: newDayId, date: newSlotDate, startMinutes: parsedNew?.startMinutes, endMinutes: parsedNew?.endMinutes }, resolvedCategory)
   );
 
   if (isNewBlocked) {
@@ -1651,7 +2028,7 @@ export async function rescheduleBooking(sessionId, oldSlotId, newSlotId, candida
   const cleanPhone = candidatePhone.replace(/\D/g, '');
 
   // Check if taken by someone else
-  const existingAtNew = bookings[newKey] || findBookingForSlot(bookings, sessionId, { id: canonicalNewSlotId, baseId: parsedNew?.baseId, startMinutes: parsedNew?.startMinutes, endMinutes: parsedNew?.endMinutes }, resolvedCategory);
+  const existingAtNew = bookings[newKey] || findBookingForSlot(bookings, sessionId, { id: canonicalNewSlotId, baseId: parsedNew?.baseId, dayId: newDayId, date: newSlotDate, startMinutes: parsedNew?.startMinutes, endMinutes: parsedNew?.endMinutes }, resolvedCategory);
   if (existingAtNew) {
     const isMe = (candidateEmail && existingAtNew.candidateEmail?.toLowerCase() === candidateEmail) ||
                  (cleanPhone && cleanPhone.length >= 7 && existingAtNew.candidatePhone?.replace(/\D/g, '') === cleanPhone);
@@ -1674,7 +2051,7 @@ export async function rescheduleBooking(sessionId, oldSlotId, newSlotId, candida
     const bName = (b.candidateName || '').trim().toLowerCase();
     const bPhone = (b.candidatePhone || '').replace(/\D/g, '');
     const isSameEmail = candidateEmail && bEmail && candidateEmail === bEmail;
-    const isSamePhone = cleanPhone && cleanPhone.length >= 7 && bPhone && (cleanPhone === bPhone || cleanPhone.endsWith(bPhone) || bPhone.endsWith(cleanPhone));
+    const isSamePhone = cleanPhone && cleanPhone.length >= 10 && bPhone && bPhone.length >= 10 && cleanPhone === bPhone;
     const isSameName = candidateName && bName && candidateName.toLowerCase() === bName;
     const isOldSlotMatch = b.slotId === oldSlotId || b.slotId === canonicalOldSlotId || k.endsWith(oldSlotId) || k.endsWith(canonicalOldSlotId);
 
@@ -1686,6 +2063,8 @@ export async function rescheduleBooking(sessionId, oldSlotId, newSlotId, candida
   const newBookingRecord = {
     sessionId,
     slotId: canonicalNewSlotId,
+    dayId: newDayId,
+    slotDate: newSlotDate,
     candidateName: candidateName.trim(),
     candidateContact: candidateContact.trim(),
     candidateCategory: resolvedCategory,
@@ -1786,7 +2165,7 @@ export async function rescheduleBooking(sessionId, oldSlotId, newSlotId, candida
     sessionId,
     sessionTitle: session?.title || 'Session',
     actor: candidateName.trim(),
-    details: `Rescheduled slot from ${canonicalOldSlotId} to ${canonicalNewSlotId} [Slot Change 1/1 Used]`
+    details: `Rescheduled slot from ${canonicalOldSlotId} to ${canonicalNewSlotId} on ${newSlotDate || session?.date} [Slot Change 1/1 Used]`
   });
 
   oldBookingKeys.forEach((oldK) => {
@@ -1804,14 +2183,36 @@ export async function rescheduleBooking(sessionId, oldSlotId, newSlotId, candida
 }
 
 export async function cancelBooking(sessionId, slotId, candidateProfile = null, isCandidateAction = false) {
+  // For candidate self-cancel: only enforce the 3-hour cutoff, NOT the slot change limit
   if (isCandidateAction && candidateProfile) {
-    const eligibility = checkSlotChangeEligibility(sessionId, slotId, candidateProfile);
-    if (!eligibility.canChange) {
-      return {
-        success: false,
-        error: eligibility.message,
-        reason: eligibility.reason
-      };
+    const sessions = getRawSessions();
+    const sess = sessions.find((s) => s.id === sessionId);
+    if (sess) {
+      const days = normalizeSessionDays(sess);
+      const parsed = parseSlotId(slotId, candidateProfile?.category);
+      const canonicalSlotId = parsed?.canonicalId || slotId;
+      let slotDate = sess.date;
+      if (parsed?.dayId) {
+        const matchDay = days.find((d) => d.id === parsed.dayId);
+        if (matchDay?.date) slotDate = matchDay.date;
+      }
+      const bookings = getRawBookings();
+      const bk = bookings[`${sessionId}_${slotId}`] || bookings[`${sessionId}_${canonicalSlotId}`];
+      if (bk?.slotDate) slotDate = bk.slotDate;
+
+      const isWithin3Hours = isSlotWithinCutoff(slotDate, canonicalSlotId, 3);
+      const hoursRemaining = getHoursUntilSlot(slotDate, canonicalSlotId);
+
+      if (isWithin3Hours) {
+        if (hoursRemaining <= 0) {
+          return { success: false, error: 'This session time has already started or passed. Bookings cannot be cancelled after the scheduled start time.', reason: 'meeting_started' };
+        }
+        const totalMins = Math.max(1, Math.round(hoursRemaining * 60));
+        const h = Math.floor(totalMins / 60);
+        const m = totalMins % 60;
+        const timeLeftStr = h > 0 ? `${h}h ${m > 0 ? `${m}m` : ''}` : `${m} min`;
+        return { success: false, error: `Cancellations must be made at least 3 hours before your scheduled time. There is only ${timeLeftStr} remaining.`, reason: 'within_cutoff' };
+      }
     }
   }
 
@@ -1822,101 +2223,89 @@ export async function cancelBooking(sessionId, slotId, candidateProfile = null, 
   const parsed = parseSlotId(slotId, candidateProfile?.category);
   const canonicalSlotId = parsed ? parsed.canonicalId : slotId;
 
-  // Find all booking keys belonging to this slot / candidate
-  const candidateEmail = (candidateProfile?.email || '').trim().toLowerCase();
-  const candidatePhone = (candidateProfile?.phone || '').replace(/\D/g, '');
-  const candidateName = (candidateProfile?.name || '').trim().toLowerCase();
-
-  const keysToDelete = new Set();
-  if (bookings[`${sessionId}_${slotId}`]) keysToDelete.add(`${sessionId}_${slotId}`);
-  if (bookings[`${sessionId}_${canonicalSlotId}`]) keysToDelete.add(`${sessionId}_${canonicalSlotId}`);
+  // Find all booking keys matching this slot or this candidate
+  const bookingKeysToDelete = new Set();
+  if (bookings[`${sessionId}_${slotId}`]) bookingKeysToDelete.add(`${sessionId}_${slotId}`);
+  if (bookings[`${sessionId}_${canonicalSlotId}`]) bookingKeysToDelete.add(`${sessionId}_${canonicalSlotId}`);
 
   let removedBooking = bookings[`${sessionId}_${slotId}`] || bookings[`${sessionId}_${canonicalSlotId}`];
 
-  Object.entries(bookings).forEach(([k, b]) => {
-    if (!k.startsWith(`${sessionId}_`)) return;
-    const bEmail = (b.candidateEmail || '').trim().toLowerCase();
-    const bPhone = (b.candidatePhone || '').replace(/\D/g, '');
-    const bName = (b.candidateName || '').trim().toLowerCase();
-    const isOldSlot = b.slotId === slotId || b.slotId === canonicalSlotId || k.endsWith(slotId) || k.endsWith(canonicalSlotId);
-    const isSameCandidate = (candidateEmail && bEmail && candidateEmail === bEmail) ||
-                            (candidatePhone && candidatePhone.length >= 7 && bPhone && candidatePhone === bPhone) ||
-                            (candidateName && bName && candidateName === bName);
-    if (isOldSlot || (isCandidateAction && isSameCandidate)) {
-      keysToDelete.add(k);
-      if (!removedBooking) removedBooking = b;
-    }
-  });
+  if (!removedBooking && candidateProfile) {
+    const cEmail = (candidateProfile.email || '').toLowerCase().trim();
+    const cName = (candidateProfile.name || '').toLowerCase().trim();
+    const cPhone = (candidateProfile.phone || '').replace(/\D/g, '');
 
-  if (keysToDelete.size === 0 && !removedBooking) {
+    Object.entries(bookings).forEach(([k, b]) => {
+      if (!k.startsWith(`${sessionId}_`)) return;
+      const bEmail = (b.candidateEmail || '').toLowerCase().trim();
+      const bName = (b.candidateName || '').toLowerCase().trim();
+      const bPhone = (b.candidatePhone || '').replace(/\D/g, '');
+
+      if ((cEmail && bEmail && cEmail === bEmail) || (cPhone && cPhone.length >= 7 && bPhone === cPhone) || (cName && bName && cName === bName)) {
+        bookingKeysToDelete.add(k);
+        removedBooking = b;
+      }
+    });
+  }
+
+  if (bookingKeysToDelete.size === 0) {
     return { success: false, error: 'Booking not found.' };
   }
 
-  // Delete all matched keys locally
-  keysToDelete.forEach((k) => {
-    delete bookings[k];
-  });
-  saveRawBookings(bookings);
-
-  // Revert attendee status
+  const candidateIdentifier = (removedBooking?.candidateEmail || removedBooking?.candidatePhone || removedBooking?.candidateContact || removedBooking?.candidateName || '').toLowerCase().trim();
+  const attKey = `${sessionId}_${candidateIdentifier}`;
   const attendees = getRawAttendees();
-  const rawEmail = (removedBooking?.candidateEmail || candidateEmail || '').trim().toLowerCase();
-  const rawPhone = (removedBooking?.candidatePhone || candidatePhone || '').replace(/\D/g, '');
-  const rawName = (removedBooking?.candidateName || candidateName || '').trim().toLowerCase();
+  let attendeeRecord = attendees[attKey];
 
-  let matchedAttKey = null;
-  Object.entries(attendees).forEach(([k, att]) => {
-    if (!k.startsWith(`${sessionId}_`)) return;
-    const attEmail = (att.email || '').trim().toLowerCase();
-    const attPhone = (att.phone || '').replace(/\D/g, '');
-    const attName = (att.name || '').trim().toLowerCase();
-    if (
-      (rawEmail && attEmail && rawEmail === attEmail) ||
-      (rawPhone && rawPhone.length >= 7 && attPhone && rawPhone === attPhone) ||
-      (rawName && attName && rawName === attName)
-    ) {
-      matchedAttKey = k;
-    }
-  });
+  if (attendeeRecord) {
+    attendeeRecord = {
+      ...attendeeRecord,
+      status: 'checked_in',
+      bookedSlotId: null,
+      lastSeenAt: new Date().toISOString()
+    };
+  }
 
-  if (matchedAttKey && attendees[matchedAttKey]) {
-    attendees[matchedAttKey].status = 'checked_in';
-    attendees[matchedAttKey].bookedSlotId = null;
-    attendees[matchedAttKey].isBooked = false;
-    if (isCandidateAction) {
-      attendees[matchedAttKey].slotChangeCount = (attendees[matchedAttKey].slotChangeCount || 0) + 1;
-    }
-    saveRawAttendees(attendees);
+  // ATOMIC FIRESTORE DELETION
+  if (isFirebaseConfigured() && db) {
+    try {
+      await runTransaction(db, async (transaction) => {
+        bookingKeysToDelete.forEach((key) => {
+          transaction.delete(doc(db, 'bookings', key));
+        });
 
-    if (candidateProfile) {
-      const updatedProf = {
-        ...candidateProfile,
-        slotChangeCount: attendees[matchedAttKey].slotChangeCount
-      };
-      saveParticipantProfile(sessionId, updatedProf);
+        if (attendeeRecord) {
+          transaction.set(doc(db, 'attendees', attKey), attendeeRecord, { merge: true });
+        }
+      });
+    } catch (err) {
+      console.warn('Firestore cancel transaction failed:', err);
     }
   }
 
-  // Firestore sync
-  if (isFirebaseConfigured() && db) {
-    keysToDelete.forEach((k) => {
-      deleteDoc(doc(db, 'bookings', k)).catch(() => {});
-    });
-    if (matchedAttKey && attendees[matchedAttKey]) {
-      setDoc(doc(db, 'attendees', matchedAttKey), attendees[matchedAttKey], { merge: true }).catch(() => {});
-    }
+  bookingKeysToDelete.forEach((key) => {
+    delete bookings[key];
+  });
+  saveRawBookings(bookings);
+
+  if (attendeeRecord) {
+    attendees[attKey] = attendeeRecord;
+    saveRawAttendees(attendees);
   }
 
   logActivityEvent({
     type: 'SLOT_CANCELLED',
-    sessionId: sessionId,
+    sessionId,
     sessionTitle: session?.title || 'Session',
-    actor: removedBooking?.candidateName || candidateProfile?.name || 'Participant',
-    details: `Cancelled booking${isCandidateAction ? ' [Slot Change 1/1 Used]' : ''}`
+    actor: isCandidateAction ? (candidateProfile?.name || 'Candidate') : 'Admin',
+    details: `Cancelled booking on slot ${canonicalSlotId} for ${removedBooking?.candidateName || 'candidate'}`
   });
 
-  broadcast('SLOT_CANCELLED', { sessionId, slotId: canonicalSlotId, removedBooking });
-  broadcast('SESSION_DATA_SYNC', { sessionId, type: 'CANCELLED' });
+  bookingKeysToDelete.forEach((key) => {
+    const sId = key.replace(`${sessionId}_`, '');
+    broadcast('SLOT_CANCELLED', { sessionId, slotId: sId });
+  });
+
   return { success: true };
 }
 
@@ -1952,6 +2341,13 @@ export function getAllCandidates() {
       if (seenCandidates.has(dedupeKey)) return;
       seenCandidates.add(dedupeKey);
 
+      const days = normalizeSessionDays(session);
+      let dayLabel = null;
+      if (booking.dayId) {
+        const foundDay = days.find((d) => d.id === booking.dayId);
+        if (foundDay) dayLabel = foundDay.label;
+      }
+
       candidateList.push({
         id: key,
         candidateName: booking.candidateName,
@@ -1962,7 +2358,9 @@ export function getAllCandidates() {
         bookedAt: booking.bookedAt,
         sessionId: session.id,
         sessionTitle: session.title,
-        sessionDate: session.date,
+        sessionDate: booking.slotDate || session.date,
+        dayId: booking.dayId || null,
+        dayLabel: dayLabel,
         slotTimeLabel: timeLabel,
         slotId: slotId
       });
@@ -1973,20 +2371,38 @@ export function getAllCandidates() {
 }
 
 // -------------------------------------------------------------
-// Participant Local Identity / Gate Cache
+// Participant Local Identity / Gate Cache (Strictly Event-Scoped)
 // -------------------------------------------------------------
 
 export function getParticipantProfile(sessionId) {
   try {
-    const data = localStorage.getItem(`${PARTICIPANT_KEY}_${sessionId}`) || localStorage.getItem(PARTICIPANT_KEY);
-    return data ? JSON.parse(data) : null;
+    if (!sessionId) return null;
+    const data = localStorage.getItem(`${PARTICIPANT_KEY}_${sessionId}`);
+    if (!data) return null;
+    const parsed = JSON.parse(data);
+    if (!parsed) return null;
+
+    // Check if there is an attendee record for this specific session to get authoritative session-scoped counts
+    const attendees = getRawAttendees();
+    const cleanEmail = (parsed.email || '').toLowerCase().trim();
+    const cleanContact = (parsed.contact || '').toLowerCase().trim();
+    const cleanName = (parsed.name || '').toLowerCase().trim();
+    const attKey = `${sessionId}_${cleanEmail || cleanContact || cleanName}`;
+    const att = attendees[attKey];
+
+    return {
+      ...parsed,
+      editCount: att?.editCount !== undefined ? Number(att.editCount) : (Number(parsed.editCount) || 0),
+      slotChangeCount: att?.slotChangeCount !== undefined ? Number(att.slotChangeCount) : (Number(parsed.slotChangeCount) || 0)
+    };
   } catch { return null; }
 }
 
 export function saveParticipantProfile(sessionId, profile) {
   try {
-    localStorage.setItem(`${PARTICIPANT_KEY}_${sessionId}`, JSON.stringify(profile));
-    localStorage.setItem(PARTICIPANT_KEY, JSON.stringify(profile));
+    if (sessionId && profile) {
+      localStorage.setItem(`${PARTICIPANT_KEY}_${sessionId}`, JSON.stringify(profile));
+    }
   } catch (e) {
     console.error('Could not save participant profile:', e);
   }
@@ -1996,7 +2412,9 @@ export function clearParticipantProfile(sessionId) {
   try {
     if (sessionId) {
       localStorage.removeItem(`${PARTICIPANT_KEY}_${sessionId}`);
+      localStorage.removeItem(`viewme_participant_${sessionId}`);
     }
+    // Also clear obsolete global fallback key if present
     localStorage.removeItem(PARTICIPANT_KEY);
   } catch (e) {
     console.error('Could not clear participant profile:', e);

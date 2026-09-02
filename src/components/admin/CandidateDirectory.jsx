@@ -74,9 +74,10 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
         onShowToast('No bookings available to export.', 'error');
         return;
       }
-      const headers = ['Session Title', 'Session Date', 'Time Slot', 'Candidate Name', 'Category', 'Email', 'Phone', 'Contact Info', 'Booked At'];
+      const headers = ['Session Title', 'Day', 'Slot Date', 'Time Slot', 'Candidate Name', 'Category', 'Email', 'Phone', 'Contact Info', 'Booked At'];
       const rows = listToExport.map((c) => [
         `"${(c.sessionTitle || '').replace(/"/g, '""')}"`,
+        `"${c.dayLabel || 'Day 1'}"`,
         `"${c.sessionDate || ''}"`,
         `"${c.slotTimeLabel || ''}"`,
         `"${(c.candidateName || '').replace(/"/g, '""')}"`,
@@ -268,7 +269,7 @@ export default function CandidateDirectory({ onSelectSession, onShowToast }) {
                       {c.sessionTitle}
                     </div>
                     <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>
-                      {formatDateDisplay(c.sessionDate)} • {c.slotTimeLabel}
+                      {c.dayLabel ? `${c.dayLabel} • ` : ''}{formatDateDisplay(c.sessionDate)} • {c.slotTimeLabel}
                     </div>
                   </div>
 

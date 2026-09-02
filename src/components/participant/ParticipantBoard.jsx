@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   getSessionDetails,
+  normalizeSessionDays,
   bookSlot,
   rescheduleBooking,
   cancelBooking,
@@ -14,6 +15,7 @@ import {
 } from '../../services/storage';
 import {
   formatDateDisplay,
+  formatEventDateRange,
   formatTimeUntilMeeting,
   getHoursUntilSlot,
   isSlotWithinCutoff,
@@ -61,6 +63,28 @@ export default function ParticipantBoard({ session: initialSession, participantP
   const duration = session.slotDuration || 15;
   const currentCategory = participantProfile?.category || session?.categories?.[0] || 'Category A';
 
+  // Multi-day state management
+  const sessionDays = useMemo(() => {
+    return normalizeSessionDays(session);
+  }, [session]);
+  const isMultiDay = sessionDays.length > 1;
+
+  const [selectedDayId, setSelectedDayId] = useState(
+    () => sessionDays[0]?.id || 'day_1'
+  );
+
+  useEffect(() => {
+    if (sessionDays.length > 0) {
+      if (!sessionDays.some((d) => d.id === selectedDayId)) {
+        setSelectedDayId(sessionDays[0].id);
+      }
+    }
+  }, [sessionDays, selectedDayId]);
+
+  const selectedDay = useMemo(() => {
+    return sessionDays.find((d) => d.id === selectedDayId) || sessionDays[0] || { id: 'day_1', label: 'Day 1', date: session?.date };
+  }, [sessionDays, selectedDayId, session?.date]);
+
   const loadData = () => {
     const fresh = getSessionDetails(session.id, participantProfile?.category);
     if (fresh) {
@@ -93,7 +117,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
       const bName = (slot.booking.candidateName || '').toLowerCase().trim();
 
       const isSameEmail = pEmail && bEmail && pEmail === bEmail;
-      const isSamePhone = pPhone && pPhone.length >= 7 && bPhone && (pPhone === bPhone || pPhone.endsWith(bPhone) || bPhone.endsWith(pPhone));
+      const isSamePhone = pPhone && pPhone.length >= 10 && bPhone && bPhone.length >= 10 && pPhone === bPhone;
       const isSameContact = pContact && bContact && pContact === bContact;
       const isSameName = pName && bName && pName === bName;
 
@@ -101,22 +125,36 @@ export default function ParticipantBoard({ session: initialSession, participantP
     });
   }, [session, participantProfile]);
 
+  // Sync selected day to active booking day on initial discovery
+  useEffect(() => {
+    if (myBooking?.dayId) {
+      setSelectedDayId(myBooking.dayId);
+    }
+  }, [myBooking?.dayId]);
+
   // Slot Change Eligibility evaluation for active booking
   const slotChangeEligibility = useMemo(() => {
     if (!myBooking || !session) return null;
     return checkSlotChangeEligibility(session.id, myBooking.id, participantProfile);
   }, [myBooking, session, participantProfile]);
 
+  // Day-scoped slots
+  const dayFilteredSlots = useMemo(() => {
+    if (!session) return [];
+    const baseSlots = session.slots || [];
+    if (!isMultiDay) return baseSlots;
+    return baseSlots.filter((slot) => !slot.dayId || slot.dayId === selectedDay.id);
+  }, [session, isMultiDay, selectedDay.id]);
+
   const filteredSlots = useMemo(() => {
-    if (!session || !session.slots) return [];
-    return session.slots.filter((slot) => {
+    return dayFilteredSlots.filter((slot) => {
       if (filterPeriod === 'open') return !slot.isBooked && !slot.isBlocked;
       if (filterPeriod === 'morning') return slot.period === 'morning';
       if (filterPeriod === 'afternoon') return slot.period === 'afternoon';
       if (filterPeriod === 'evening') return slot.period === 'evening';
       return true;
     });
-  }, [session, filterPeriod]);
+  }, [dayFilteredSlots, filterPeriod]);
 
   // Grouped periods for smooth stream timeline
   const morningSlots = useMemo(() => {
@@ -205,7 +243,6 @@ export default function ParticipantBoard({ session: initialSession, participantP
       setSelectedSlotForBooking(null);
       loadData();
     } else {
-      // Conflict or already reserved
       setBookingConflictError(res.error || 'This slot is no longer available.');
       loadData();
     }
@@ -241,7 +278,8 @@ export default function ParticipantBoard({ session: initialSession, participantP
 
   const handleConfirmCancelMyBooking = async () => {
     if (!slotToCancel) return;
-    const res = await cancelBooking(session.id, slotToCancel.id, participantProfile, true);
+    const targetSlotId = myBooking?.id || slotToCancel.booking?.slotId || slotToCancel.id;
+    const res = await cancelBooking(session.id, targetSlotId, participantProfile, true);
     if (res.success) {
       onShowToast('Your slot booking has been cancelled.');
       loadData();
@@ -330,13 +368,29 @@ export default function ParticipantBoard({ session: initialSession, participantP
       return;
     }
 
+    // Full-name validation (same rules as ParticipantGate)
+    const nameWords = trimmedName.split(/\s+/).filter(w => w.length >= 2);
+    const nameRegex = /^[A-Za-z\u00C0-\u024F'-]+$/;
+    if (nameWords.length < 2) {
+      setEditError('Please enter your full name (first and last name, each at least 2 characters).');
+      return;
+    }
+    for (const word of nameWords) {
+      if (!nameRegex.test(word)) {
+        setEditError('Name can only contain letters, hyphens, and apostrophes.');
+        return;
+      }
+    }
+
     if (!isValidEmail(trimmedEmail)) {
       setEditError('Please enter a valid email address.');
       return;
     }
 
-    if (!trimmedPhone || !isValidPhone(trimmedPhone)) {
-      setEditError('Please enter a valid phone number (e.g. +1 555-019-2834).');
+    // Strict phone validation (must have 10+ digits)
+    const phoneDigits = trimmedPhone.replace(/\D/g, '');
+    if (phoneDigits.length < 10) {
+      setEditError('Please enter a valid phone number with at least 10 digits.');
       return;
     }
 
@@ -380,9 +434,9 @@ export default function ParticipantBoard({ session: initialSession, participantP
       slot.isBooked &&
       (
         (pEmail && bEmail && pEmail === bEmail) ||
-        (pPhone && pPhone.length >= 7 && bPhone && (pPhone === bPhone || pPhone.endsWith(bPhone) || bPhone.endsWith(pPhone))) ||
+        (pPhone && pPhone.length >= 10 && bPhone && bPhone.length >= 10 && pPhone === bPhone) ||
         (pContact && bContact && pContact === bContact) ||
-        (pName && bName && pName === bName)
+        (pName && bName && pName === bName && (pEmail || pPhone))
       );
 
     if (slot.isBooked) {
@@ -394,10 +448,15 @@ export default function ParticipantBoard({ session: initialSession, participantP
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
             <div className={`timeline-slot-dot ${isMine ? 'mine' : 'booked'}`} />
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <span className="font-headline" style={{ fontWeight: '800', fontSize: '15px', color: 'var(--color-primary)' }}>
                   {slot.timeLabel}
                 </span>
+                {isMultiDay && (
+                  <span className="chip" style={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-outline-variant)', color: 'var(--color-primary)', fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                    {slot.dayLabel || selectedDay.label}
+                  </span>
+                )}
                 <span className={`chip ${isMine ? 'chip-success' : 'chip-neutral'}`} style={{ fontSize: '11px', padding: '2px 8px' }}>
                   {isMine ? 'Your Slot' : 'Booked'}
                 </span>
@@ -440,10 +499,15 @@ export default function ParticipantBoard({ session: initialSession, participantP
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
             <div className="timeline-slot-dot blocked" />
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <span className="font-headline" style={{ fontWeight: '700', fontSize: '15px', color: 'var(--color-secondary)' }}>
                   {slot.timeLabel}
                 </span>
+                {isMultiDay && (
+                  <span className="chip" style={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-outline-variant)', color: 'var(--color-secondary)', fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                    {slot.dayLabel || selectedDay.label}
+                  </span>
+                )}
                 <span
                   className="chip"
                   style={{
@@ -479,10 +543,15 @@ export default function ParticipantBoard({ session: initialSession, participantP
         <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
           <div className="timeline-slot-dot open" />
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <span className="font-headline" style={{ fontWeight: '800', fontSize: '16px', color: 'var(--color-primary)' }}>
                 {slot.timeLabel}
               </span>
+              {isMultiDay && (
+                <span className="chip" style={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-outline-variant)', color: 'var(--color-primary)', fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                  {slot.dayLabel || selectedDay.label}
+                </span>
+              )}
               <span className="chip chip-success" style={{ fontSize: '11px', padding: '2px 8px' }}>
                 Available
               </span>
@@ -494,7 +563,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
         </div>
 
         <button className="btn btn-sm btn-primary slot-book-action-btn" type="button">
-          <span>Book Slot</span>
+          <span>{myBooking ? 'Switch to this Slot' : 'Book Slot'}</span>
           <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>arrow_forward</span>
         </button>
       </div>
@@ -517,13 +586,20 @@ export default function ParticipantBoard({ session: initialSession, participantP
           className={`slot-card booked ${isMine ? 'my-booking' : ''}`}
         >
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '4px' }}>
               <span className="label-md" style={{ color: 'var(--color-primary)', fontWeight: '700' }}>
                 {slot.timeLabel}
               </span>
-              <span className={`chip ${isMine ? 'chip-success' : 'chip-neutral'}`}>
-                {isMine ? 'Your Slot' : 'Booked'}
-              </span>
+              <div style={{ display: 'flex', gap: '4px' }}>
+                {isMultiDay && (
+                  <span className="chip chip-neutral" style={{ fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                    {slot.dayLabel || selectedDay.label}
+                  </span>
+                )}
+                <span className={`chip ${isMine ? 'chip-success' : 'chip-neutral'}`}>
+                  {isMine ? 'Your Slot' : 'Booked'}
+                </span>
+              </div>
             </div>
 
             <div style={{ marginTop: '8px' }}>
@@ -571,13 +647,20 @@ export default function ParticipantBoard({ session: initialSession, participantP
           }}
         >
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '4px' }}>
               <span className="label-md" style={{ color: 'var(--color-secondary)', fontWeight: '700' }}>
                 {slot.timeLabel}
               </span>
-              <span className="chip chip-neutral" style={{ fontSize: '11px' }}>
-                Unavailable
-              </span>
+              <div style={{ display: 'flex', gap: '4px' }}>
+                {isMultiDay && (
+                  <span className="chip chip-neutral" style={{ fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                    {slot.dayLabel || selectedDay.label}
+                  </span>
+                )}
+                <span className="chip chip-neutral" style={{ fontSize: '11px' }}>
+                  Unavailable
+                </span>
+              </div>
             </div>
             <div style={{ fontSize: '13px', color: 'var(--color-secondary)', marginTop: '8px' }}>
               This time slot is unavailable
@@ -595,11 +678,18 @@ export default function ParticipantBoard({ session: initialSession, participantP
         onClick={() => handleOpenBookingModal(slot)}
       >
         <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '4px' }}>
             <span className="label-md" style={{ color: 'var(--color-primary)', fontWeight: '700' }}>
               {slot.timeLabel}
             </span>
-            <span className="chip chip-success">Available</span>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {isMultiDay && (
+                <span className="chip chip-neutral" style={{ fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                  {slot.dayLabel || selectedDay.label}
+                </span>
+              )}
+              <span className="chip chip-success">Available</span>
+            </div>
           </div>
           <div style={{ fontSize: '13px', color: 'var(--color-secondary)', marginTop: '4px' }}>
             {duration} mins • Video Call
@@ -608,7 +698,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
 
         <div style={{ marginTop: '14px', textAlign: 'right' }}>
           <button className="btn btn-sm btn-primary" type="button">
-            <span>Book Slot</span>
+            <span>{myBooking ? 'Switch' : 'Book Slot'}</span>
             <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
               arrow_forward
             </span>
@@ -620,7 +710,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: 'var(--color-background)', display: 'flex', flexDirection: 'column' }}>
-      {/* Top App Bar matching Design System */}
+      {/* Top App Bar */}
       <header
         style={{
           backgroundColor: 'var(--color-surface)',
@@ -656,6 +746,11 @@ export default function ParticipantBoard({ session: initialSession, participantP
             <span className="headline-sm" style={{ color: 'var(--color-secondary)' }}>
               {session.title}
             </span>
+            {isMultiDay && (
+              <span className="chip" style={{ backgroundColor: 'var(--color-primary)', color: '#ffffff', fontSize: '11px', fontWeight: '700' }}>
+                🗓️ {sessionDays.length} Days Event
+              </span>
+            )}
           </div>
 
           {/* Participant Profile & Edit Info */}
@@ -764,11 +859,11 @@ export default function ParticipantBoard({ session: initialSession, participantP
           width: '100%',
           display: 'flex',
           flexDirection: 'column',
-          gap: '28px',
+          gap: '24px',
           flex: 1
         }}
       >
-        {/* Active Booking Banner (if participant has booked a slot) */}
+        {/* Active Booking Banner */}
         {myBooking && (
           <div
             className="card"
@@ -818,14 +913,14 @@ export default function ParticipantBoard({ session: initialSession, participantP
                   )}
                 </div>
                 <h2 className="headline-md" style={{ color: 'var(--color-primary)', marginTop: '2px' }}>
-                  {myBooking.timeLabel} • {formatDateDisplay(session.date)}
+                  {myBooking.timeLabel} • {myBooking.dayLabel ? `${myBooking.dayLabel} (${formatDateDisplay(myBooking.slotDate || session.date)})` : formatDateDisplay(session.date)}
                 </h2>
                 <p className="body-sm" style={{ color: 'var(--color-secondary)' }}>
                   Candidate: <strong>{myBooking.booking.candidateName}</strong> ({myBooking.booking.candidateEmail || myBooking.booking.candidateContact} {myBooking.booking.candidatePhone ? `• ${myBooking.booking.candidatePhone}` : ''})
                 </p>
                 <div style={{ fontSize: '12px', color: 'var(--color-on-surface-variant)', marginTop: '4px' }}>
                   {slotChangeEligibility?.canChange
-                    ? `ℹ️ You may change this booking once. Changes must be made at least 3 hours before start time (${formatTimeUntilMeeting(session.date, myBooking)}).`
+                    ? `ℹ️ You may change this booking once (including switching to another day). Changes must be made at least 3 hours before start time (${formatTimeUntilMeeting(myBooking.slotDate || session.date, myBooking)}).`
                     : `🔒 ${slotChangeEligibility?.message || 'Slot change is no longer available for this booking.'}`}
                 </div>
               </div>
@@ -945,13 +1040,15 @@ export default function ParticipantBoard({ session: initialSession, participantP
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '16px', marginTop: '14px' }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
                     <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', marginTop: '2px', fontSize: '20px' }}>
-                      event
+                      {isMultiDay ? 'date_range' : 'event'}
                     </span>
                     <div>
                       <div style={{ fontWeight: '700', fontSize: '14px', color: 'var(--color-primary)' }}>
-                        {formatDateDisplay(session.date)}
+                        {formatEventDateRange(session)}
                       </div>
-                      <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>Date of Session</div>
+                      <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>
+                        {isMultiDay ? `${sessionDays.length} Days Schedule` : 'Date of Session'}
+                      </div>
                     </div>
                   </div>
 
@@ -964,7 +1061,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
                         {duration} Minutes
                       </div>
                       <div style={{ fontSize: '12px', color: 'var(--color-secondary)' }}>
-                        {session.startTime} – {session.endTime} ({session.timezone})
+                        {selectedDay.startTime} – {selectedDay.endTime} ({session.timezone})
                       </div>
                     </div>
                   </div>
@@ -1042,51 +1139,109 @@ export default function ParticipantBoard({ session: initialSession, participantP
 
           {/* Center Content: Interactive Time Stream & Slot Selection */}
           <section style={{ flex: 1, minWidth: '300px' }}>
-            {/* Eye-catching Candidate Instructions Banner */}
-            {session.description && (
+            {/* Multi-Day Selector Component */}
+            {isMultiDay && (
               <div
                 style={{
-                  padding: '16px 20px',
-                  borderRadius: 'var(--radius-md)',
-                  background: 'linear-gradient(135deg, rgba(254, 243, 199, 0.45) 0%, rgba(255, 251, 235, 0.95) 100%)',
-                  border: '1px solid #fcd34d',
-                  borderLeft: '5px solid #f59e0b',
                   marginBottom: '20px',
-                  boxShadow: '0 2px 10px rgba(245, 158, 11, 0.08)',
-                  display: 'flex',
-                  gap: '14px',
-                  alignItems: 'flex-start'
+                  backgroundColor: 'var(--color-surface)',
+                  border: '1.5px solid var(--color-outline-variant)',
+                  borderRadius: 'var(--radius-lg)',
+                  padding: '18px 20px',
+                  boxShadow: 'var(--shadow-sm)'
                 }}
               >
-                <div
-                  style={{
-                    width: '36px',
-                    height: '36px',
-                    borderRadius: 'var(--radius-full)',
-                    backgroundColor: '#fef3c7',
-                    color: '#d97706',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0
-                  }}
-                >
-                  <span className="material-symbols-outlined fill" style={{ fontSize: '20px' }}>
-                    tips_and_updates
-                  </span>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px', marginBottom: '4px' }}>
-                    <span style={{ fontWeight: '800', fontSize: '13px', color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
-                      Candidate Preparation & Instructions
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '20px', color: 'var(--color-primary)' }}>
+                      calendar_month
                     </span>
-                    <span className="chip chip-accent" style={{ fontSize: '10px', padding: '1px 7px' }}>
-                      Host Note
+                    <span style={{ fontWeight: '800', fontSize: '14px', color: 'var(--color-primary)', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                      Step 1: Choose a Day ({sessionDays.length} Available Days)
                     </span>
                   </div>
-                  <p style={{ color: '#78350f', fontSize: '13px', lineHeight: 1.6, margin: 0, whiteSpace: 'pre-wrap' }}>
-                    {session.description}
-                  </p>
+                  <span className="chip chip-neutral" style={{ fontSize: '11px' }}>
+                    Pick a day to view its available time slots
+                  </span>
+                </div>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: `repeat(auto-fit, minmax(${sessionDays.length <= 3 ? '180px' : '150px'}, 1fr))`,
+                    gap: '12px'
+                  }}
+                >
+                  {sessionDays.map((d, index) => {
+                    const isSelected = d.id === selectedDay.id;
+                    const dayAllSlots = session.daySlots?.[d.id]?.[currentCategory] || session.slots?.filter((s) => s.dayId === d.id) || [];
+                    const openCount = dayAllSlots.filter((s) => !s.isBooked && !s.isBlocked).length;
+                    const isMyBookingDay = myBooking && (myBooking.dayId === d.id || myBooking.slotDate === d.date);
+
+                    return (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => setSelectedDayId(d.id)}
+                        style={{
+                          padding: '14px 16px',
+                          borderRadius: 'var(--radius-md)',
+                          border: isSelected
+                            ? '2px solid var(--color-primary)'
+                            : isMyBookingDay
+                            ? '2px solid var(--color-success)'
+                            : '1px solid var(--color-outline-variant)',
+                          backgroundColor: isSelected
+                            ? 'var(--color-surface-container)'
+                            : isMyBookingDay
+                            ? '#f0fdf4'
+                            : 'var(--color-surface)',
+                          textAlign: 'left',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '6px',
+                          position: 'relative',
+                          boxShadow: isSelected ? '0 4px 14px rgba(99, 102, 241, 0.15)' : 'none',
+                          transition: 'all var(--transition-fast)'
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span
+                            style={{
+                              fontSize: '12px',
+                              fontWeight: '800',
+                              color: isSelected ? 'var(--color-primary)' : 'var(--color-secondary)',
+                              textTransform: 'uppercase'
+                            }}
+                          >
+                            {d.label || `Day ${index + 1}`}
+                          </span>
+                          {isMyBookingDay && (
+                            <span className="chip chip-success" style={{ fontSize: '10px', padding: '1px 6px' }}>
+                              ★ Your Day
+                            </span>
+                          )}
+                        </div>
+
+                        <div style={{ fontWeight: '700', fontSize: '14px', color: 'var(--color-primary)' }}>
+                          {formatDateDisplay(d.date)}
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: 'var(--color-secondary)', marginTop: '2px' }}>
+                          <span>{d.startTime} – {d.endTime}</span>
+                          <span
+                            style={{
+                              fontWeight: '700',
+                              color: openCount > 0 ? 'var(--color-success)' : 'var(--color-secondary)'
+                            }}
+                          >
+                            {openCount > 0 ? `${openCount} open` : 'Fully booked'}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -1105,7 +1260,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
                   <h2 className="headline-lg" style={{ color: 'var(--color-primary)' }}>
-                    Select a Time Slot
+                    {isMultiDay ? `${selectedDay.label} Time Slots` : 'Select a Time Slot'}
                   </h2>
                   <span className="chip chip-accent" style={{ fontSize: '11px', fontWeight: '700' }}>
                     {participantProfile.category?.startsWith('Category') ? participantProfile.category : `Category ${participantProfile.category || 'A'}`} Track
@@ -1113,8 +1268,8 @@ export default function ParticipantBoard({ session: initialSession, participantP
                 </div>
                 <p className="body-sm" style={{ color: 'var(--color-secondary)' }}>
                   {myBooking
-                    ? 'You have already booked a slot. Cancel your slot above if you wish to change times.'
-                    : `Showing full ${session.startTime} – ${session.endTime} schedule for ${participantProfile.category || 'Category A'} (${session.slots?.length || 0} seats).`}
+                    ? `You currently have a reserved slot. Click any available time slot below to reschedule.`
+                    : `Showing open ${selectedDay.startTime} – ${selectedDay.endTime} slots for ${selectedDay.label || 'the day'} (${formatDateDisplay(selectedDay.date)}).`}
                 </p>
               </div>
 
@@ -1262,7 +1417,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <span style={{ fontSize: '16px' }}>🌙</span>
                           <span style={{ fontWeight: '700', fontSize: '13px', color: 'var(--color-primary)' }}>
-                            Evening Slots (05:00 PM+)
+                            Evening Slots (05:00 PM onwards)
                           </span>
                         </div>
                         <span className="chip chip-neutral" style={{ fontSize: '11px', padding: '1px 6px' }}>
@@ -1276,41 +1431,46 @@ export default function ParticipantBoard({ session: initialSession, participantP
                   )}
 
                   {filteredSlots.length === 0 && (
-                    <div style={{ textAlign: 'center', padding: '48px 20px', color: 'var(--color-secondary)' }}>
-                      No interview slots available for this period filter.
+                    <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--color-secondary)' }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: '36px', marginBottom: '8px', opacity: 0.5 }}>
+                        event_busy
+                      </span>
+                      <p className="body-md">No time slots found matching your filter criteria.</p>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setFilterPeriod('all')}
+                        style={{ marginTop: '12px' }}
+                      >
+                        Reset Filters
+                      </button>
                     </div>
                   )}
                 </div>
               </div>
             ) : (
-              /* Grid Layout Mode */
-              <div>
-                {/* Filter Tabs for Grid */}
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
-                  {[
-                    { key: 'all', label: `All Slots (${session.totalSlots})` },
-                    { key: 'open', label: 'Open Only' },
-                    { key: 'morning', label: 'Morning' },
-                    { key: 'afternoon', label: 'Afternoon' },
-                    { key: 'evening', label: 'Evening' }
-                  ].map((tab) => (
-                    <button
-                      key={tab.key}
-                      onClick={() => setFilterPeriod(tab.key)}
-                      className={`btn btn-sm ${filterPeriod === tab.key ? 'btn-primary' : 'btn-secondary'}`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="slots-grid">
-                  {filteredSlots.map(renderGridSlotCard)}
-                </div>
+              /* Grid Layout */
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+                  gap: '12px'
+                }}
+              >
+                {filteredSlots.map(renderGridSlotCard)}
 
                 {filteredSlots.length === 0 && (
-                  <div className="card" style={{ textAlign: 'center', padding: '40px', color: 'var(--color-secondary)' }}>
-                    No time slots match the selected period.
+                  <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px 20px', color: 'var(--color-secondary)' }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: '36px', marginBottom: '8px', opacity: 0.5 }}>
+                      event_busy
+                    </span>
+                    <p className="body-md">No time slots found matching your filter criteria.</p>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setFilterPeriod('all')}
+                      style={{ marginTop: '12px' }}
+                    >
+                      Reset Filters
+                    </button>
                   </div>
                 )}
               </div>
@@ -1319,16 +1479,20 @@ export default function ParticipantBoard({ session: initialSession, participantP
         </div>
       </main>
 
-      {/* 1-Click Booking Confirmation Modal */}
+      {/* Slot Booking Confirmation Modal */}
       {selectedSlotForBooking && (
-        <div className="modal-overlay" onClick={() => setSelectedSlotForBooking(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '460px' }}>
+        <div className="modal-overlay" onClick={() => !isSubmitting && setSelectedSlotForBooking(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '480px' }}>
             <div className="modal-drag-handle" />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
               <h3 className="headline-md" style={{ color: 'var(--color-primary)' }}>
-                Confirm Booking
+                Confirm Slot Reservation
               </h3>
-              <button onClick={() => setSelectedSlotForBooking(null)} style={{ color: 'var(--color-secondary)' }}>
+              <button
+                onClick={() => !isSubmitting && setSelectedSlotForBooking(null)}
+                style={{ color: 'var(--color-secondary)' }}
+                disabled={isSubmitting}
+              >
                 <span className="material-symbols-outlined">close</span>
               </button>
             </div>
@@ -1336,19 +1500,26 @@ export default function ParticipantBoard({ session: initialSession, participantP
             <div
               style={{
                 padding: '16px',
-                borderRadius: 'var(--radius-lg)',
+                borderRadius: 'var(--radius-md)',
                 backgroundColor: 'var(--color-surface-container)',
                 marginBottom: '20px'
               }}
             >
-              <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--color-secondary)', textTransform: 'uppercase' }}>
-                Selected Time Slot
+              {isMultiDay && (
+                <div style={{ marginBottom: '8px' }}>
+                  <span className="chip chip-accent" style={{ fontSize: '11px', fontWeight: '700' }}>
+                    🗓️ {selectedSlotForBooking.dayLabel || selectedDay.label || 'Day 1'} • {formatDateDisplay(selectedSlotForBooking.date || selectedDay.date)}
+                  </span>
+                </div>
+              )}
+              <div className="label-sm" style={{ color: 'var(--color-secondary)', marginBottom: '4px' }}>
+                Requested Time Slot
               </div>
-              <div className="headline-md" style={{ color: 'var(--color-primary)', margin: '4px 0' }}>
+              <div className="headline-md" style={{ color: 'var(--color-primary)', marginBottom: '4px' }}>
                 {selectedSlotForBooking.timeLabel}
               </div>
               <div style={{ fontSize: '13px', color: 'var(--color-secondary)' }}>
-                {formatDateDisplay(session.date)} ({session.timezone}) • {duration} Minutes
+                {formatDateDisplay(selectedSlotForBooking.date || selectedDay.date || session.date)} ({session.timezone}) • {duration} Minutes
               </div>
             </div>
 
@@ -1486,7 +1657,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
             {switchStep === 1 && (
               <div>
                 <p className="body-sm" style={{ color: 'var(--color-secondary)', marginBottom: '16px' }}>
-                  You are switching your booking time for <strong>{formatDateDisplay(session.date)}</strong>. Please review your new selected slot:
+                  You are switching your booking time. Please review your new selected slot:
                 </p>
 
                 <div
@@ -1507,6 +1678,9 @@ export default function ParticipantBoard({ session: initialSession, participantP
                     <div style={{ fontWeight: '700', color: 'var(--color-primary)', textDecoration: 'line-through', fontSize: '15px' }}>
                       {myBooking?.timeLabel}
                     </div>
+                    <div style={{ fontSize: '11px', color: 'var(--color-secondary)', marginTop: '2px' }}>
+                      {myBooking?.dayLabel ? `${myBooking.dayLabel} • ` : ''}{formatDateDisplay(myBooking?.slotDate || session.date)}
+                    </div>
                   </div>
                   <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', fontSize: '24px' }}>
                     arrow_forward
@@ -1515,6 +1689,9 @@ export default function ParticipantBoard({ session: initialSession, participantP
                     <div className="label-sm" style={{ color: 'var(--color-success)' }}>New Requested Slot</div>
                     <div style={{ fontWeight: '800', color: 'var(--color-success)', fontSize: '16px' }}>
                       {slotToSwitch.timeLabel}
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--color-success)', marginTop: '2px', fontWeight: '700' }}>
+                      {slotToSwitch.dayLabel ? `${slotToSwitch.dayLabel} • ` : ''}{formatDateDisplay(slotToSwitch.date || selectedDay.date)}
                     </div>
                   </div>
                 </div>
@@ -1580,7 +1757,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
                   </div>
                   <ul style={{ paddingLeft: '20px', color: '#b71c1c', fontSize: '13px', lineHeight: 1.55, display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     <li>
-                      Your booking will be moved to <strong>{slotToSwitch.timeLabel}</strong>.
+                      Your booking will be moved to <strong>{slotToSwitch.dayLabel ? `${slotToSwitch.dayLabel} (` : ''}{formatDateDisplay(slotToSwitch.date || selectedDay.date)}{slotToSwitch.dayLabel ? ')' : ''} at {slotToSwitch.timeLabel}</strong>.
                     </li>
                     <li>
                       <strong>You will have 0 slot changes remaining.</strong>
@@ -1800,80 +1977,75 @@ export default function ParticipantBoard({ session: initialSession, participantP
                   <strong>Edit Attempt:</strong> {editCount + 1} of 2
                 </span>
               </div>
-              <span className="chip chip-accent" style={{ fontSize: '11px', padding: '2px 8px' }}>
-                {editsRemaining} edit{editsRemaining === 1 ? '' : 's'} remaining
+              <span className="chip chip-accent" style={{ fontSize: '10px', padding: '1px 6px' }}>
+                {editsRemaining} remaining
               </span>
             </div>
 
             <form onSubmit={handleSaveEditInfo}>
-              <div style={{ marginBottom: '16px' }}>
-                <label className="input-label" htmlFor="edit-cand-name">
+              <div style={{ marginBottom: '14px' }}>
+                <label className="input-label" htmlFor="edit-name">
                   Full Name *
                 </label>
                 <input
-                  id="edit-cand-name"
+                  id="edit-name"
                   type="text"
                   className="input-field"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Enter your full name"
                   required
                   autoFocus
-                  disabled={isSavingEdit}
                 />
               </div>
 
-              <div style={{ marginBottom: '16px' }}>
-                <label className="input-label" htmlFor="edit-cand-category">
-                  Category *
+              <div style={{ marginBottom: '14px' }}>
+                <label className="input-label" htmlFor="edit-cat">
+                  Category Track *
                 </label>
                 <select
-                  id="edit-cand-category"
+                  id="edit-cat"
                   className="input-field"
                   value={editCategory}
                   onChange={(e) => setEditCategory(e.target.value)}
                   required
-                  disabled={isSavingEdit}
-                  style={{ backgroundColor: 'var(--color-surface)' }}
                 >
-                  {(session?.categories || ['Category A', 'Category B', 'Category C']).map((cat) => (
+                  {(session.categories || ['Category A', 'Category B', 'Category C']).map((cat) => (
                     <option key={cat} value={cat}>
-                      {formatCategoryName(cat)}
+                      {cat}
                     </option>
                   ))}
                 </select>
               </div>
 
-              <div style={{ marginBottom: '16px' }}>
-                <label className="input-label" htmlFor="edit-cand-email">
+              <div style={{ marginBottom: '14px' }}>
+                <label className="input-label" htmlFor="edit-email">
                   Email Address *
                 </label>
                 <input
-                  id="edit-cand-email"
+                  id="edit-email"
                   type="email"
                   className="input-field"
                   value={editEmail}
                   onChange={(e) => setEditEmail(e.target.value)}
+                  placeholder="name@example.com"
                   required
-                  disabled={isSavingEdit}
                 />
               </div>
 
               <div style={{ marginBottom: '20px' }}>
-                <label className="input-label" htmlFor="edit-cand-phone">
-                  Phone Number *
+                <label className="input-label" htmlFor="edit-phone">
+                  Phone / WhatsApp Number *
                 </label>
                 <input
-                  id="edit-cand-phone"
+                  id="edit-phone"
                   type="tel"
                   className="input-field"
                   value={editPhone}
                   onChange={(e) => setEditPhone(e.target.value)}
+                  placeholder="+1 (555) 000-0000"
                   required
-                  disabled={isSavingEdit}
                 />
-                <span style={{ fontSize: '11px', color: 'var(--color-secondary)', display: 'block', marginTop: '4px' }}>
-                  Updating your contact info will automatically update your attendance and active booking.
-                </span>
               </div>
 
               {editError && (
@@ -1884,16 +2056,10 @@ export default function ParticipantBoard({ session: initialSession, participantP
                     backgroundColor: 'var(--color-error-container)',
                     color: 'var(--color-on-error-container)',
                     fontSize: '13px',
-                    marginBottom: '18px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
+                    marginBottom: '16px'
                   }}
                 >
-                  <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
-                    error
-                  </span>
-                  <span>{editError}</span>
+                  {editError}
                 </div>
               )}
 
@@ -1911,10 +2077,7 @@ export default function ParticipantBoard({ session: initialSession, participantP
                   className="btn btn-primary"
                   disabled={isSavingEdit}
                 >
-                  <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
-                    check
-                  </span>
-                  <span>{isSavingEdit ? 'Saving...' : 'Save Changes'}</span>
+                  {isSavingEdit ? 'Saving...' : 'Save & Update Details'}
                 </button>
               </div>
             </form>
@@ -1922,182 +2085,187 @@ export default function ParticipantBoard({ session: initialSession, participantP
         </div>
       )}
 
-      {/* Floating Invisible Tester HUD Toolbelt (Only visible to tester account) */}
+      {/* QA Tester Floating HUD */}
       {isTester && (
-        <aside
-          aria-label="Tester Controls"
+        <div
           style={{
             position: 'fixed',
             bottom: '20px',
             right: '20px',
             zIndex: 9999,
-            maxWidth: '340px',
-            width: isTesterHudOpen ? 'calc(100vw - 40px)' : 'auto',
-            borderRadius: 'var(--radius-lg)',
             backgroundColor: '#1e293b',
             color: '#f8fafc',
-            boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3)',
-            border: '1.5px solid #3b82f6',
+            borderRadius: 'var(--radius-lg)',
+            boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3)',
+            border: '1px solid #334155',
             overflow: 'hidden',
+            width: isTesterHudOpen ? '320px' : 'auto',
             transition: 'all 0.2s ease'
           }}
         >
-          {/* Header / Collapse Bar */}
+          {/* HUD Header */}
           <div
-            onClick={() => setIsTesterHudOpen(!isTesterHudOpen)}
             style={{
               padding: '10px 14px',
               backgroundColor: '#0f172a',
               display: 'flex',
-              alignItems: 'center',
               justifyContent: 'space-between',
-              cursor: 'pointer',
-              userSelect: 'none',
-              borderBottom: isTesterHudOpen ? '1px solid #334155' : 'none'
+              alignItems: 'center',
+              cursor: 'pointer'
             }}
+            onClick={() => setIsTesterHudOpen(!isTesterHudOpen)}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#60a5fa' }}>
+              <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#38bdf8' }}>
                 science
               </span>
-              <span style={{ fontSize: '12px', fontWeight: '800', letterSpacing: '0.4px', textTransform: 'uppercase', color: '#93c5fd' }}>
-                Invisible Tester Sandbox
+              <span style={{ fontWeight: '700', fontSize: '13px', letterSpacing: '0.5px' }}>
+                ADMIN QA TESTER TOOLBOX
               </span>
             </div>
-            <span className="material-symbols-outlined" style={{ fontSize: '18px', color: '#94a3b8' }}>
-              {isTesterHudOpen ? 'expand_more' : 'expand_less'}
-            </span>
+            <button
+              style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: 0 }}
+              title={isTesterHudOpen ? 'Collapse HUD' : 'Expand HUD'}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
+                {isTesterHudOpen ? 'expand_more' : 'expand_less'}
+              </span>
+            </button>
           </div>
 
-          {/* Tester Action Panel */}
+          {/* HUD Body */}
           {isTesterHudOpen && (
-            <div style={{ padding: '14px' }}>
-              <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '10px' }}>
-                Testing as: <strong style={{ color: '#ffffff' }}>{participantProfile.name}</strong> • Track: <strong style={{ color: '#38bdf8' }}>{participantProfile.category || 'A'}</strong>
+            <div style={{ padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#cbd5e1' }}>
+                <span>Identity:</span>
+                <strong style={{ color: '#38bdf8' }}>{participantProfile.name}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#cbd5e1' }}>
+                <span>Category Track:</span>
+                <strong>{participantProfile.category || 'A'}</strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#cbd5e1' }}>
+                <span>Slot Change Used:</span>
+                <strong style={{ color: slotChangeEligibility?.changeCount >= 1 ? '#f87171' : '#4ade80' }}>
+                  {slotChangeEligibility?.changeCount || 0} / 1
+                </strong>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#cbd5e1' }}>
+                <span>Info Edits Used:</span>
+                <strong style={{ color: editCount >= 2 ? '#f87171' : '#4ade80' }}>
+                  {editCount} / 2
+                </strong>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {/* Category Quick Switcher for Testers */}
+              <div style={{ borderTop: '1px solid #334155', paddingTop: '8px', marginTop: '4px' }}>
+                <div style={{ color: '#94a3b8', marginBottom: '6px', fontSize: '11px', fontWeight: '600' }}>
+                  SWITCH CANDIDATE TRACK:
+                </div>
+                <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                  {(session.categories || ['Category A', 'Category B', 'Category C']).map((cat) => (
+                    <button
+                      key={cat}
+                      onClick={() => handleQuickSwitchCategory(cat)}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: '10px',
+                        borderRadius: '4px',
+                        border: '1px solid #475569',
+                        backgroundColor: (participantProfile.category === cat) ? '#38bdf8' : '#1e293b',
+                        color: (participantProfile.category === cat) ? '#0f172a' : '#f8fafc',
+                        fontWeight: '700',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ borderTop: '1px solid #334155', paddingTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <button
-                  type="button"
                   onClick={handleResetMyTestBooking}
                   style={{
+                    padding: '6px 10px',
+                    borderRadius: '4px',
+                    backgroundColor: '#0284c7',
+                    color: '#ffffff',
+                    border: 'none',
+                    fontWeight: '600',
+                    cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: '6px',
-                    padding: '8px 12px',
-                    backgroundColor: '#ef4444',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: 'var(--radius-sm)',
-                    fontSize: '12px',
-                    fontWeight: '700',
-                    cursor: 'pointer'
+                    gap: '6px'
                   }}
-                  title="Wipe your booking so you can test reserving from scratch"
                 >
-                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>restart_alt</span>
-                  <span>Reset & Wipe My Booking</span>
+                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>refresh</span>
+                  <span>Wipe My Test Booking</span>
                 </button>
 
                 <button
-                  type="button"
                   onClick={handleResetChangeLimit}
                   style={{
+                    padding: '6px 10px',
+                    borderRadius: '4px',
+                    backgroundColor: '#475569',
+                    color: '#ffffff',
+                    border: 'none',
+                    fontWeight: '600',
+                    cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: '6px',
-                    padding: '8px 12px',
-                    backgroundColor: '#3b82f6',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: 'var(--radius-sm)',
-                    fontSize: '12px',
-                    fontWeight: '700',
-                    cursor: 'pointer'
+                    gap: '6px'
                   }}
-                  title="Reset your change counter to 0/1 used"
                 >
-                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>lock_open</span>
-                  <span>Reset Slot Change Limit (0/1 Used)</span>
+                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>restart_alt</span>
+                  <span>Reset Slot Change Limit (0/1)</span>
                 </button>
 
-                {/* Quick Track Switcher */}
-                <div style={{ marginTop: '4px' }}>
-                  <div style={{ fontSize: '10px', textTransform: 'uppercase', color: '#94a3b8', marginBottom: '4px' }}>
-                    Quick-Switch Track:
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    {(session.categories || ['Category A', 'Category B', 'Category C']).map((cat) => (
-                      <button
-                        key={cat}
-                        type="button"
-                        onClick={() => handleQuickSwitchCategory(cat)}
-                        style={{
-                          flex: 1,
-                          padding: '4px 6px',
-                          borderRadius: '4px',
-                          fontSize: '11px',
-                          fontWeight: '700',
-                          backgroundColor: participantProfile.category === cat ? '#38bdf8' : '#334155',
-                          color: participantProfile.category === cat ? '#0f172a' : '#f8fafc',
-                          border: 'none',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        {cat.replace('Category ', '')}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
                 <button
-                  type="button"
                   onClick={handleResetAccountAndGoToGate}
                   style={{
+                    padding: '6px 10px',
+                    borderRadius: '4px',
+                    backgroundColor: '#dc2626',
+                    color: '#ffffff',
+                    border: 'none',
+                    fontWeight: '600',
+                    cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    gap: '6px',
-                    padding: '8px 12px',
-                    backgroundColor: '#8b5cf6',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: 'var(--radius-sm)',
-                    fontSize: '12px',
-                    fontWeight: '700',
-                    cursor: 'pointer',
-                    marginTop: '4px'
+                    gap: '6px'
                   }}
-                  title="Wipe tester booking and return to the candidate info / check-in screen"
                 >
-                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>person_edit</span>
-                  <span>Reset Account (View Info Place)</span>
+                  <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>logout</span>
+                  <span>Wipe Tester & Return to Info Form</span>
                 </button>
 
                 <button
-                  type="button"
                   onClick={handleExitTesterMode}
                   style={{
-                    marginTop: '4px',
-                    padding: '6px',
+                    padding: '4px 10px',
+                    borderRadius: '4px',
                     backgroundColor: 'transparent',
                     color: '#94a3b8',
                     border: '1px solid #475569',
-                    borderRadius: 'var(--radius-sm)',
-                    fontSize: '11px',
-                    cursor: 'pointer'
+                    fontWeight: '500',
+                    cursor: 'pointer',
+                    marginTop: '2px'
                   }}
                 >
-                  🚪 Exit & Reset Check-In Gate
+                  Exit Tester Mode (Clear Profile)
                 </button>
               </div>
             </div>
           )}
-        </aside>
+        </div>
       )}
     </div>
   );
 }
-

@@ -108,13 +108,52 @@ export function formatCategoryName(category) {
 }
 
 /**
- * Parse any variant slotId into its canonical components
+ * Parse any variant slotId into its canonical components (single-day or multi-day)
  */
 export function parseSlotId(slotId, defaultCategory = null) {
   if (!slotId) return null;
   const str = String(slotId).trim();
   
-  // Format: slot_[categorySlug]_[startMinutes]_[endMinutes] or slot_[startMinutes]_[endMinutes]
+  // Format 1: slot_[dayId]_[categorySlug]_[startMinutes]_[endMinutes]
+  // e.g. slot_day_1_cat_a_540_555 or slot_d2_cat_b_600_615
+  const matchDayWithCat = str.match(/^slot_(day[_\-\w\d]+|d\d+)_(.+)_(\d+)_(\d+)$/i);
+  if (matchDayWithCat) {
+    const dayId = matchDayWithCat[1];
+    const rawCat = matchDayWithCat[2];
+    const startMins = Number(matchDayWithCat[3]);
+    const endMins = Number(matchDayWithCat[4]);
+    const canonicalSlug = getCanonicalCategorySlug(rawCat);
+    return {
+      rawId: str,
+      dayId: dayId,
+      canonicalId: `slot_${dayId}_${canonicalSlug}_${startMins}_${endMins}`,
+      baseId: `slot_${dayId}_${startMins}_${endMins}`,
+      categorySlug: canonicalSlug,
+      startMinutes: startMins,
+      endMinutes: endMins
+    };
+  }
+
+  // Format 2: slot_[dayId]_[startMinutes]_[endMinutes]
+  // e.g. slot_day_1_540_555
+  const matchDayBase = str.match(/^slot_(day[_\-\w\d]+|d\d+)_(\d+)_(\d+)$/i);
+  if (matchDayBase) {
+    const dayId = matchDayBase[1];
+    const startMins = Number(matchDayBase[2]);
+    const endMins = Number(matchDayBase[3]);
+    const canonicalSlug = defaultCategory ? getCanonicalCategorySlug(defaultCategory) : 'cat_a';
+    return {
+      rawId: str,
+      dayId: dayId,
+      canonicalId: `slot_${dayId}_${canonicalSlug}_${startMins}_${endMins}`,
+      baseId: `slot_${dayId}_${startMins}_${endMins}`,
+      categorySlug: canonicalSlug,
+      startMinutes: startMins,
+      endMinutes: endMins
+    };
+  }
+
+  // Format 3: slot_[categorySlug]_[startMinutes]_[endMinutes]
   const matchWithCat = str.match(/^slot_(.+)_(\d+)_(\d+)$/i);
   if (matchWithCat) {
     const rawCat = matchWithCat[1];
@@ -123,6 +162,7 @@ export function parseSlotId(slotId, defaultCategory = null) {
     const canonicalSlug = getCanonicalCategorySlug(rawCat);
     return {
       rawId: str,
+      dayId: null,
       canonicalId: `slot_${canonicalSlug}_${startMins}_${endMins}`,
       baseId: `slot_${startMins}_${endMins}`,
       categorySlug: canonicalSlug,
@@ -131,6 +171,7 @@ export function parseSlotId(slotId, defaultCategory = null) {
     };
   }
 
+  // Format 4: slot_[startMinutes]_[endMinutes]
   const matchBase = str.match(/^slot_(\d+)_(\d+)$/i);
   if (matchBase) {
     const startMins = Number(matchBase[1]);
@@ -138,6 +179,7 @@ export function parseSlotId(slotId, defaultCategory = null) {
     const canonicalSlug = defaultCategory ? getCanonicalCategorySlug(defaultCategory) : 'cat_a';
     return {
       rawId: str,
+      dayId: null,
       canonicalId: `slot_${canonicalSlug}_${startMins}_${endMins}`,
       baseId: `slot_${startMins}_${endMins}`,
       categorySlug: canonicalSlug,
@@ -150,9 +192,9 @@ export function parseSlotId(slotId, defaultCategory = null) {
 }
 
 /**
- * Generate 15-minute slot definitions between start and end time
+ * Generate 15-minute slot definitions between start and end time (single-day or multi-day)
  */
-export function generateTimeSlots(startTime24, endTime24, slotDurationMinutes = 15, category = null) {
+export function generateTimeSlots(startTime24, endTime24, slotDurationMinutes = 15, category = null, dayObj = null) {
   const startMins = timeToMinutes(startTime24);
   const endMins = timeToMinutes(endTime24);
 
@@ -163,18 +205,33 @@ export function generateTimeSlots(startTime24, endTime24, slotDurationMinutes = 
   const slots = [];
   let currentMins = startMins;
   const canonicalSlug = category ? getCanonicalCategorySlug(category) : null;
+  const dayId = dayObj ? (dayObj.id || dayObj.dayId || 'day_1') : null;
+  const dayDate = dayObj ? dayObj.date : null;
+  const dayLabel = dayObj ? (dayObj.label || 'Day 1') : null;
 
   while (currentMins + slotDurationMinutes <= endMins) {
     const nextMins = currentMins + slotDurationMinutes;
     const startFormatted = minutesTo12Hour(currentMins);
     const endFormatted = minutesTo12Hour(nextMins);
     const period = getSlotPeriod(currentMins);
-    const baseId = `slot_${currentMins}_${nextMins}`;
-    const slotId = canonicalSlug ? `slot_${canonicalSlug}_${currentMins}_${nextMins}` : baseId;
+
+    let baseId;
+    let slotId;
+
+    if (dayId) {
+      baseId = `slot_${dayId}_${currentMins}_${nextMins}`;
+      slotId = canonicalSlug ? `slot_${dayId}_${canonicalSlug}_${currentMins}_${nextMins}` : baseId;
+    } else {
+      baseId = `slot_${currentMins}_${nextMins}`;
+      slotId = canonicalSlug ? `slot_${canonicalSlug}_${currentMins}_${nextMins}` : baseId;
+    }
 
     slots.push({
       id: slotId,
       baseId: baseId,
+      dayId: dayId,
+      date: dayDate,
+      dayLabel: dayLabel,
       canonicalSlug: canonicalSlug || 'cat_a',
       category: category || null,
       startTime: startFormatted,
@@ -205,6 +262,43 @@ export function formatDateDisplay(dateString) {
     day: 'numeric',
     year: 'numeric'
   });
+}
+
+/**
+ * Format an event's date range or multi-day summary (e.g. "Sep 3 – Sep 5, 2026 (3 Days)" or "Thu, Sep 3, 2026")
+ */
+export function formatEventDateRange(session) {
+  if (!session) return '';
+  const days = session.days && Array.isArray(session.days) && session.days.length > 0
+    ? session.days
+    : (session.date ? [{ date: session.date }] : []);
+
+  if (days.length === 0) return '';
+  if (days.length === 1) {
+    return formatDateDisplay(days[0].date);
+  }
+
+  // Multi-day event formatting
+  const dates = days.map((d) => d.date).filter(Boolean).sort();
+  if (dates.length === 0) return '';
+  const firstDateStr = dates[0];
+  const lastDateStr = dates[dates.length - 1];
+
+  const [y1, m1, d1] = firstDateStr.split('-').map(Number);
+  const [y2, m2, d2] = lastDateStr.split('-').map(Number);
+  const date1 = new Date(y1, m1 - 1, d1);
+  const date2 = new Date(y2, m2 - 1, d2);
+
+  const m1Name = date1.toLocaleDateString('en-US', { month: 'short' });
+  const m2Name = date2.toLocaleDateString('en-US', { month: 'short' });
+
+  if (y1 === y2) {
+    if (m1 === m2) {
+      return `${m1Name} ${d1} – ${d2}, ${y1} (${days.length} Days)`;
+    }
+    return `${m1Name} ${d1} – ${m2Name} ${d2}, ${y1} (${days.length} Days)`;
+  }
+  return `${m1Name} ${d1}, ${y1} – ${m2Name} ${d2}, ${y2} (${days.length} Days)`;
 }
 
 /**
@@ -246,18 +340,14 @@ export function extractSlotStartMinutes(slot) {
   if (typeof slot === 'object') {
     if (typeof slot.startMinutes === 'number') return slot.startMinutes;
     if (slot.id && typeof slot.id === 'string' && slot.id.startsWith('slot_')) {
-      const parts = slot.id.split('_');
-      if (parts.length >= 2 && !isNaN(Number(parts[1]))) {
-        return Number(parts[1]);
-      }
+      const parsed = parseSlotId(slot.id);
+      if (parsed) return parsed.startMinutes;
     }
     if (slot.startTime) return timeToMinutes(slot.startTime);
   } else if (typeof slot === 'string') {
     if (slot.startsWith('slot_')) {
-      const parts = slot.split('_');
-      if (parts.length >= 2 && !isNaN(Number(parts[1]))) {
-        return Number(parts[1]);
-      }
+      const parsed = parseSlotId(slot);
+      if (parsed) return parsed.startMinutes;
     }
     return timeToMinutes(slot);
   }
@@ -268,8 +358,9 @@ export function extractSlotStartMinutes(slot) {
  * Construct exact Date object for a scheduled slot start
  */
 export function getSlotStartDateTime(sessionDate, slot) {
-  if (!sessionDate) return null;
-  const [year, month, day] = sessionDate.split('-').map(Number);
+  const effectiveDate = (typeof slot === 'object' && (slot?.date || slot?.slotDate)) ? (slot.date || slot.slotDate) : sessionDate;
+  if (!effectiveDate) return null;
+  const [year, month, day] = effectiveDate.split('-').map(Number);
   if (!year || !month || !day) return null;
 
   const startMins = extractSlotStartMinutes(slot);
@@ -320,19 +411,15 @@ export function extractSlotEndMinutes(slot, durationMinutes = 15) {
   if (typeof slot === 'object') {
     if (typeof slot.endMinutes === 'number') return slot.endMinutes;
     if (slot.id && typeof slot.id === 'string' && slot.id.startsWith('slot_')) {
-      const parts = slot.id.split('_');
-      if (parts.length >= 3 && !isNaN(Number(parts[2]))) {
-        return Number(parts[2]);
-      }
+      const parsed = parseSlotId(slot.id);
+      if (parsed) return parsed.endMinutes;
     }
     if (slot.endTime) return timeToMinutes(slot.endTime);
     if (typeof slot.startMinutes === 'number') return slot.startMinutes + durationMinutes;
   } else if (typeof slot === 'string') {
     if (slot.startsWith('slot_')) {
-      const parts = slot.split('_');
-      if (parts.length >= 3 && !isNaN(Number(parts[2]))) {
-        return Number(parts[2]);
-      }
+      const parsed = parseSlotId(slot);
+      if (parsed) return parsed.endMinutes;
     }
     return timeToMinutes(slot) + durationMinutes;
   }
@@ -343,8 +430,9 @@ export function extractSlotEndMinutes(slot, durationMinutes = 15) {
  * Construct exact Date object for a scheduled slot end
  */
 export function getSlotEndDateTime(sessionDate, slot, durationMinutes = 15) {
-  if (!sessionDate) return null;
-  const [year, month, day] = sessionDate.split('-').map(Number);
+  const effectiveDate = (typeof slot === 'object' && (slot?.date || slot?.slotDate)) ? (slot.date || slot.slotDate) : sessionDate;
+  if (!effectiveDate) return null;
+  const [year, month, day] = effectiveDate.split('-').map(Number);
   if (!year || !month || !day) return null;
 
   const endMins = extractSlotEndMinutes(slot, durationMinutes);
@@ -368,8 +456,9 @@ function toGCalUtcString(date) {
 export function generateGoogleCalendarUrl({ session, slot, candidateProfile, booking }) {
   if (!session || !slot) return '';
 
-  const startDate = getSlotStartDateTime(session.date, slot);
-  const endDate = getSlotEndDateTime(session.date, slot, session.slotDuration || 15);
+  const effectiveDate = slot.date || booking?.slotDate || session.date;
+  const startDate = getSlotStartDateTime(effectiveDate, slot);
+  const endDate = getSlotEndDateTime(effectiveDate, slot, session.slotDuration || 15);
 
   if (!startDate || !endDate) return '';
 
@@ -380,6 +469,7 @@ export function generateGoogleCalendarUrl({ session, slot, candidateProfile, boo
   const candidateName = candidateProfile?.name || booking?.candidateName || 'Participant';
   const category = candidateProfile?.category || booking?.candidateCategory || 'A';
   const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
+  const dayLabel = slot.dayLabel || (booking?.dayId ? `Day ${booking.dayId.replace(/\D/g, '')}` : '');
 
   const meetingUrl = session.meetingLink ? session.meetingLink.trim() : '';
 
@@ -389,7 +479,7 @@ export function generateGoogleCalendarUrl({ session, slot, candidateProfile, boo
       : '🎥 Meeting link will be provided by host.\n',
     `══════════════════════════════════`,
     `Session: ${session.title}`,
-    `Date: ${formatDateDisplay(session.date)}`,
+    dayLabel ? `Day: ${dayLabel} (${formatDateDisplay(effectiveDate)})` : `Date: ${formatDateDisplay(effectiveDate)}`,
     `Time: ${slot.timeLabel} (${session.timezone || 'Local Time'})`,
     `Participant: ${candidateName} (Category ${category})`,
     session.description ? `\nSession Instructions:\n${session.description}` : '',
@@ -426,8 +516,9 @@ export function openGoogleCalendarDirectly({ session, slot, candidateProfile, bo
 export function downloadIcsFile({ session, slot, candidateProfile, booking }) {
   if (!session || !slot) return;
 
-  const startDate = getSlotStartDateTime(session.date, slot);
-  const endDate = getSlotEndDateTime(session.date, slot, session.slotDuration || 15);
+  const effectiveDate = slot.date || booking?.slotDate || session.date;
+  const startDate = getSlotStartDateTime(effectiveDate, slot);
+  const endDate = getSlotEndDateTime(effectiveDate, slot, session.slotDuration || 15);
 
   if (!startDate || !endDate) return;
 
@@ -440,10 +531,13 @@ export function downloadIcsFile({ session, slot, candidateProfile, booking }) {
   const title = session.title || 'Scheduled Session';
   const uid = `viewme-${session.id}-${slot.id || 'slot'}-${Date.now()}@viewme.app`;
   const meetingUrl = session.meetingLink ? session.meetingLink.trim() : '';
+  const dayLabel = slot.dayLabel || (booking?.dayId ? `Day ${booking.dayId.replace(/\D/g, '')}` : '');
 
   const icsDescription = [
     meetingUrl ? `🎥 JOIN ZOOM MEETING: ${meetingUrl}\\n` : '',
     `Session: ${session.title}`,
+    dayLabel ? `Day: ${dayLabel} (${formatDateDisplay(effectiveDate)})` : `Date: ${formatDateDisplay(effectiveDate)}`,
+    `Time: ${slot.timeLabel}`,
     `Participant: ${candidateName} (Category ${category})`,
     session.description ? `Instructions: ${session.description}` : '',
     `Portal: ${window.location.href}`

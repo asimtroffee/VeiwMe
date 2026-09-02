@@ -4,6 +4,7 @@ import {
   getSessionAttendees,
   cancelBooking,
   toggleSlotBlocked,
+  updateBookingAttendance,
   updateSessionMeetingLink,
   updateSessionDescription,
   updateSessionCategories,
@@ -12,7 +13,7 @@ import {
   fetchRemoteSession,
   subscribeToSessionSync
 } from '../../services/storage';
-import { formatDateDisplay, matchCategory, formatCategoryName } from '../../services/timeUtils';
+import { formatDateDisplay, formatEventDateRange, matchCategory, formatCategoryName } from '../../services/timeUtils';
 import ConfirmModal from '../common/ConfirmModal';
 import EditSessionModal from './EditSessionModal';
 
@@ -21,6 +22,7 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
   const [attendees, setAttendees] = useState([]);
   const [activeTab, setActiveTab] = useState('slots'); // 'slots' | 'attendees'
   const [selectedCategoryTab, setSelectedCategoryTab] = useState('all'); // 'all' | category name
+  const [selectedDayTab, setSelectedDayTab] = useState('all'); // 'all' | day_1 | day_2 ...
   const [isManagingCategories, setIsManagingCategories] = useState(false);
   const [isEditingSessionModal, setIsEditingSessionModal] = useState(false);
   const [categoryEditList, setCategoryEditList] = useState([]);
@@ -75,11 +77,22 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     setSlotToCancel(null);
   };
 
-  const handleToggleBlockSlot = (slot) => {
-    const res = toggleSlotBlocked(sessionId, slot.id);
+  const handleToggleBlockSlot = async (slot) => {
+    const res = await toggleSlotBlocked(sessionId, slot.id);
     if (res.success) {
       onShowToast(res.isBlocked ? `Slot ${slot.timeLabel} marked unavailable.` : `Slot ${slot.timeLabel} is now open and available.`);
       loadData();
+    }
+  };
+
+  const handleToggleAttendance = async (slot, newStatus) => {
+    const res = await updateBookingAttendance(sessionId, slot.id, newStatus);
+    if (res.success) {
+      const label = newStatus === 'attended' ? 'Attended' : newStatus === 'no_show' ? 'No-show' : 'Not marked';
+      onShowToast(`${slot.booking?.candidateName || 'Candidate'} marked as "${label}"`);
+      loadData();
+    } else {
+      onShowToast(res.error || 'Failed to update attendance.', 'error');
     }
   };
 
@@ -108,9 +121,9 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     window.location.hash = `#/session/${session.id}`;
   };
 
-  const handleSaveMeetingLink = (e) => {
+  const handleSaveMeetingLink = async (e) => {
     e.preventDefault();
-    const res = updateSessionMeetingLink(sessionId, meetingLinkInput);
+    const res = await updateSessionMeetingLink(sessionId, meetingLinkInput);
     if (res.success) {
       onShowToast(meetingLinkInput.trim() ? 'Zoom meeting link updated!' : 'Meeting link cleared.');
       setIsEditingMeetingLink(false);
@@ -120,9 +133,9 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     }
   };
 
-  const handleSaveDescription = (e) => {
+  const handleSaveDescription = async (e) => {
     e.preventDefault();
-    const res = updateSessionDescription(sessionId, descriptionInput);
+    const res = await updateSessionDescription(sessionId, descriptionInput);
     if (res.success) {
       onShowToast(descriptionInput.trim() ? 'Candidate instructions saved!' : 'Instructions cleared.');
       setIsEditingDescription(false);
@@ -158,12 +171,12 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     setCategoryEditList(categoryEditList.filter((c) => c !== catToRemove));
   };
 
-  const handleSaveCategories = () => {
+  const handleSaveCategories = async () => {
     if (categoryEditList.length === 0) {
       onShowToast('Please add at least 1 category.', 'error');
       return;
     }
-    const res = updateSessionCategories(sessionId, categoryEditList);
+    const res = await updateSessionCategories(sessionId, categoryEditList);
     if (res.success) {
       onShowToast(`Updated session categories (${categoryEditList.length} total)`);
       setIsManagingCategories(false);
@@ -226,13 +239,15 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     }
 
     if (!session.slots) return;
-    const headers = ['Session Title', 'Session Date', 'Slot Time', 'Category', 'Status', 'Candidate Name', 'Email', 'Phone', 'Contact Info', 'Booked At'];
+    const headers = ['Session Title', 'Day', 'Date', 'Slot Time', 'Category', 'Status', 'Attendance', 'Candidate Name', 'Email', 'Phone', 'Contact Info', 'Booked At'];
     const rows = (session.allSlots || session.slots).map((slot) => [
       `"${(session.title || '').replace(/"/g, '""')}"`,
-      `"${session.date}"`,
+      `"${slot.dayLabel || 'Day 1'}"`,
+      `"${slot.date || session.date}"`,
       `"${slot.timeLabel}"`,
       `"${slot.category || slot.booking?.candidateCategory || 'A'}"`,
       slot.isBooked ? '"Booked"' : slot.isBlocked ? '"Unavailable (Blocked)"' : '"Available"',
+      slot.isBooked ? `"${slot.booking.attendanceStatus === 'attended' ? 'Attended' : slot.booking.attendanceStatus === 'no_show' ? 'No-show' : 'Not marked'}"` : '""',
       slot.isBooked ? `"${(slot.booking.candidateName || '').replace(/"/g, '""')}"` : '""',
       slot.isBooked ? `"${(slot.booking.candidateEmail || '').replace(/"/g, '""')}"` : '""',
       slot.isBooked ? `"${(slot.booking.candidatePhone || '').replace(/"/g, '""')}"` : '""',
@@ -255,18 +270,23 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
     if (!session) return [];
     const sourceSlots = session.allSlots || session.slots || [];
     return sourceSlots.filter((slot) => {
+      if (selectedDayTab !== 'all' && slot.dayId && slot.dayId !== selectedDayTab) {
+        return false;
+      }
       if (selectedCategoryTab !== 'all' && slot.category && !matchCategory(slot.category, selectedCategoryTab)) {
         return false;
       }
       if (filterPeriod === 'available') return !slot.isBooked && !slot.isBlocked;
       if (filterPeriod === 'booked') return slot.isBooked;
       if (filterPeriod === 'blocked') return slot.isBlocked;
+      if (filterPeriod === 'attended') return slot.isBooked && slot.booking?.attendanceStatus === 'attended';
+      if (filterPeriod === 'no_show') return slot.isBooked && slot.booking?.attendanceStatus === 'no_show';
       if (filterPeriod === 'morning') return slot.period === 'morning';
       if (filterPeriod === 'afternoon') return slot.period === 'afternoon';
       if (filterPeriod === 'evening') return slot.period === 'evening';
       return true;
     });
-  }, [session, filterPeriod, selectedCategoryTab]);
+  }, [session, filterPeriod, selectedCategoryTab, selectedDayTab]);
 
   // Grouped periods for smooth scroll and timeline sections
   const morningSlots = useMemo(() => {
@@ -288,16 +308,32 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
             <div className="timeline-slot-dot booked" />
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <span className="font-headline" style={{ fontWeight: '800', fontSize: '15px', color: 'var(--color-primary)' }}>
                   {slot.timeLabel}
                 </span>
+                {session.days?.length > 1 && (
+                  <span className="chip" style={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-outline-variant)', color: 'var(--color-primary)', fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                    {slot.dayLabel || 'Day 1'} • {slot.date}
+                  </span>
+                )}
                 <span className="chip chip-neutral" style={{ fontSize: '11px', padding: '2px 8px' }}>
                   Booked
                 </span>
                 <span className="chip chip-accent" style={{ fontSize: '10px', padding: '1px 6px' }}>
                   {formatCategoryName(slot.category || slot.booking?.candidateCategory || 'Category A')}
                 </span>
+                {/* Attendance Status Chip */}
+                {slot.booking.attendanceStatus === 'attended' && (
+                  <span className="chip" style={{ fontSize: '10px', padding: '1px 6px', backgroundColor: '#dcfce7', color: '#166534', fontWeight: '700' }}>
+                    ✓ Attended
+                  </span>
+                )}
+                {slot.booking.attendanceStatus === 'no_show' && (
+                  <span className="chip" style={{ fontSize: '10px', padding: '1px 6px', backgroundColor: '#fef2f2', color: '#991b1b', fontWeight: '700' }}>
+                    ✗ No-show
+                  </span>
+                )}
               </div>
               <div style={{ fontSize: '12px', color: 'var(--color-secondary)', marginTop: '4px' }}>
                 {slot.booking.candidateName} • {slot.booking.candidateEmail ? `${slot.booking.candidateEmail} ${slot.booking.candidatePhone ? `• ${slot.booking.candidatePhone}` : ''}` : slot.booking.candidateContact}
@@ -305,13 +341,50 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
             </div>
           </div>
 
-          <button
-            className="btn btn-sm btn-danger"
-            onClick={() => setSlotToCancel(slot)}
-          >
-            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>cancel</span>
-            <span>Cancel Booking</span>
-          </button>
+          {/* Action Buttons Row */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+            {/* Attendance Toggle Buttons */}
+            <button
+              className="btn btn-sm"
+              onClick={() => handleToggleAttendance(slot, slot.booking.attendanceStatus === 'attended' ? 'not_marked' : 'attended')}
+              title={slot.booking.attendanceStatus === 'attended' ? 'Unmark attendance' : 'Mark as attended'}
+              style={{
+                backgroundColor: slot.booking.attendanceStatus === 'attended' ? '#dcfce7' : 'var(--color-surface-container)',
+                color: slot.booking.attendanceStatus === 'attended' ? '#166534' : 'var(--color-secondary)',
+                border: slot.booking.attendanceStatus === 'attended' ? '1.5px solid #86efac' : '1px solid var(--color-outline-variant)',
+                fontWeight: '600'
+              }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
+                {slot.booking.attendanceStatus === 'attended' ? 'check_circle' : 'radio_button_unchecked'}
+              </span>
+              <span>{slot.booking.attendanceStatus === 'attended' ? 'Attended' : 'Attended?'}</span>
+            </button>
+            <button
+              className="btn btn-sm"
+              onClick={() => handleToggleAttendance(slot, slot.booking.attendanceStatus === 'no_show' ? 'not_marked' : 'no_show')}
+              title={slot.booking.attendanceStatus === 'no_show' ? 'Unmark no-show' : 'Mark as no-show'}
+              style={{
+                backgroundColor: slot.booking.attendanceStatus === 'no_show' ? '#fef2f2' : 'var(--color-surface-container)',
+                color: slot.booking.attendanceStatus === 'no_show' ? '#991b1b' : 'var(--color-secondary)',
+                border: slot.booking.attendanceStatus === 'no_show' ? '1.5px solid #fca5a5' : '1px solid var(--color-outline-variant)',
+                fontWeight: '600'
+              }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>
+                {slot.booking.attendanceStatus === 'no_show' ? 'cancel' : 'person_off'}
+              </span>
+              <span>{slot.booking.attendanceStatus === 'no_show' ? 'No-show' : 'No-show?'}</span>
+            </button>
+
+            <button
+              className="btn btn-sm btn-danger"
+              onClick={() => setSlotToCancel(slot)}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>cancel</span>
+              <span>Cancel</span>
+            </button>
+          </div>
         </div>
       );
     }
@@ -322,10 +395,15 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
             <div className="timeline-slot-dot blocked" />
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <span className="font-headline" style={{ fontWeight: '700', fontSize: '15px', color: 'var(--color-secondary)' }}>
                   {slot.timeLabel}
                 </span>
+                {session.days?.length > 1 && (
+                  <span className="chip" style={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-outline-variant)', color: 'var(--color-secondary)', fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                    {slot.dayLabel || 'Day 1'} • {slot.date}
+                  </span>
+                )}
                 <span
                   className="chip"
                   style={{
@@ -362,10 +440,15 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
           <div className="timeline-slot-dot open" />
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <span className="font-headline" style={{ fontWeight: '800', fontSize: '15px', color: 'var(--color-primary)' }}>
                 {slot.timeLabel}
               </span>
+              {session.days?.length > 1 && (
+                <span className="chip" style={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-outline-variant)', color: 'var(--color-primary)', fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                  {slot.dayLabel || 'Day 1'} • {slot.date}
+                </span>
+              )}
               <span className="chip chip-success" style={{ fontSize: '11px', padding: '2px 8px' }}>
                 Open
               </span>
@@ -403,11 +486,28 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
           style={{ minHeight: '140px' }}
         >
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '4px' }}>
               <span className="label-md" style={{ color: 'var(--color-primary)', fontWeight: '700' }}>
                 {slot.timeLabel}
               </span>
-              <span className="chip chip-neutral">Booked</span>
+              <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                {session.days?.length > 1 && (
+                  <span className="chip chip-neutral" style={{ fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                    {slot.dayLabel || 'Day 1'}
+                  </span>
+                )}
+                <span className="chip chip-neutral">Booked</span>
+                {slot.booking.attendanceStatus === 'attended' && (
+                  <span className="chip" style={{ fontSize: '10px', padding: '1px 6px', backgroundColor: '#dcfce7', color: '#166534', fontWeight: '700' }}>
+                    ✓ Attended
+                  </span>
+                )}
+                {slot.booking.attendanceStatus === 'no_show' && (
+                  <span className="chip" style={{ fontSize: '10px', padding: '1px 6px', backgroundColor: '#fef2f2', color: '#991b1b', fontWeight: '700' }}>
+                    ✗ No-show
+                  </span>
+                )}
+              </div>
             </div>
 
             <div style={{ marginTop: '8px' }}>
@@ -428,13 +528,45 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
             </div>
           </div>
 
-          <div style={{ marginTop: '14px', borderTop: '1px solid var(--color-outline-variant)', paddingTop: '10px', textAlign: 'right' }}>
+          <div style={{ marginTop: '14px', borderTop: '1px solid var(--color-outline-variant)', paddingTop: '10px', display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button
+              className="btn btn-sm"
+              onClick={() => handleToggleAttendance(slot, slot.booking.attendanceStatus === 'attended' ? 'not_marked' : 'attended')}
+              title={slot.booking.attendanceStatus === 'attended' ? 'Unmark attendance' : 'Mark as attended'}
+              style={{
+                backgroundColor: slot.booking.attendanceStatus === 'attended' ? '#dcfce7' : 'var(--color-surface-container)',
+                color: slot.booking.attendanceStatus === 'attended' ? '#166534' : 'var(--color-secondary)',
+                border: slot.booking.attendanceStatus === 'attended' ? '1.5px solid #86efac' : '1px solid var(--color-outline-variant)',
+                fontWeight: '600'
+              }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>
+                {slot.booking.attendanceStatus === 'attended' ? 'check_circle' : 'radio_button_unchecked'}
+              </span>
+              <span style={{ fontSize: '11px' }}>{slot.booking.attendanceStatus === 'attended' ? 'Attended' : 'Attended?'}</span>
+            </button>
+            <button
+              className="btn btn-sm"
+              onClick={() => handleToggleAttendance(slot, slot.booking.attendanceStatus === 'no_show' ? 'not_marked' : 'no_show')}
+              title={slot.booking.attendanceStatus === 'no_show' ? 'Unmark no-show' : 'Mark as no-show'}
+              style={{
+                backgroundColor: slot.booking.attendanceStatus === 'no_show' ? '#fef2f2' : 'var(--color-surface-container)',
+                color: slot.booking.attendanceStatus === 'no_show' ? '#991b1b' : 'var(--color-secondary)',
+                border: slot.booking.attendanceStatus === 'no_show' ? '1.5px solid #fca5a5' : '1px solid var(--color-outline-variant)',
+                fontWeight: '600'
+              }}
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>
+                {slot.booking.attendanceStatus === 'no_show' ? 'cancel' : 'person_off'}
+              </span>
+              <span style={{ fontSize: '11px' }}>{slot.booking.attendanceStatus === 'no_show' ? 'No-show' : 'No-show?'}</span>
+            </button>
             <button
               className="btn btn-sm btn-danger"
               onClick={() => setSlotToCancel(slot)}
             >
               <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>cancel</span>
-              Cancel Booking
+              Cancel
             </button>
           </div>
         </div>
@@ -454,21 +586,28 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
           }}
         >
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '4px' }}>
               <span className="label-md" style={{ color: 'var(--color-secondary)', fontWeight: '700' }}>
                 {slot.timeLabel}
               </span>
-              <span
-                className="chip"
-                style={{
-                  backgroundColor: 'var(--color-error-container)',
-                  color: 'var(--color-on-error-container)',
-                  fontSize: '11px',
-                  fontWeight: '600'
-                }}
-              >
-                Unavailable
-              </span>
+              <div style={{ display: 'flex', gap: '4px' }}>
+                {session.days?.length > 1 && (
+                  <span className="chip chip-neutral" style={{ fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                    {slot.dayLabel || 'Day 1'}
+                  </span>
+                )}
+                <span
+                  className="chip"
+                  style={{
+                    backgroundColor: 'var(--color-error-container)',
+                    color: 'var(--color-on-error-container)',
+                    fontSize: '11px',
+                    fontWeight: '600'
+                  }}
+                >
+                  Unavailable
+                </span>
+              </div>
             </div>
 
             <div style={{ fontSize: '13px', color: 'var(--color-secondary)', marginTop: '10px' }}>
@@ -498,11 +637,18 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
         style={{ minHeight: '140px' }}
       >
         <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '4px' }}>
             <span className="label-md" style={{ color: 'var(--color-primary)', fontWeight: '700' }}>
               {slot.timeLabel}
             </span>
-            <span className="chip chip-success">Open</span>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {session.days?.length > 1 && (
+                <span className="chip chip-neutral" style={{ fontSize: '10px', padding: '1px 6px', fontWeight: '700' }}>
+                  {slot.dayLabel || 'Day 1'}
+                </span>
+              )}
+              <span className="chip chip-success">Open</span>
+            </div>
           </div>
 
           <div style={{ fontSize: '13px', color: 'var(--color-secondary)', marginTop: '10px' }}>
@@ -590,8 +736,13 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
       <div className="card" style={{ marginBottom: '28px' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'flex-start', gap: '16px' }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', flexWrap: 'wrap' }}>
               <span className="chip chip-accent">{session.timezone} Timezone</span>
+              {(session.eventType === 'multi' || session.days?.length > 1) && (
+                <span className="chip" style={{ backgroundColor: 'var(--color-primary)', color: '#ffffff', fontWeight: '700' }}>
+                  🗓️ {session.days?.length || 1} Days Event
+                </span>
+              )}
               <span className="chip chip-neutral">{session.totalSlots} Slots ({session.slotDuration || 15} min)</span>
               <span className="chip chip-neutral">{attendees.length} Checked-in Candidates</span>
             </div>
@@ -610,14 +761,17 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
                 <span>Edit Details</span>
               </button>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', color: 'var(--color-secondary)', fontSize: '14px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', color: 'var(--color-secondary)', fontSize: '14px', flexWrap: 'wrap' }}>
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>calendar_today</span>
-                {formatDateDisplay(session.date)}
+                {formatEventDateRange(session)}
               </span>
               <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>schedule</span>
-                {session.slots[0]?.startTime} – {session.slots[session.slots.length - 1]?.endTime}
+                {session.eventType === 'multi' && session.days?.length > 1
+                  ? `${session.days.length} Days Schedule (${session.slotDuration || 15}m slots)`
+                  : `${session.startTime} – ${session.endTime} (${session.slotDuration || 15}m slots)`
+                }
               </span>
             </div>
             {/* Candidate Instructions / Description Section */}
@@ -856,6 +1010,23 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
             <div style={{ fontSize: '11px', color: 'var(--color-secondary)', marginTop: '4px' }}>
               {session.percentBooked}% Booked
             </div>
+            {/* Attendance Stats */}
+            {session.bookedCount > 0 && (
+              <div style={{ marginTop: '10px', borderTop: '1px solid var(--color-outline-variant)', paddingTop: '8px', display: 'flex', justifyContent: 'center', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: '14px', color: '#16a34a' }}>check_circle</span>
+                  <span style={{ fontSize: '12px', fontWeight: '700', color: '#166534' }}>{session.attendedCount}</span>
+                  <span style={{ fontSize: '11px', color: 'var(--color-secondary)' }}>Attended</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: '14px', color: '#dc2626' }}>person_off</span>
+                  <span style={{ fontSize: '12px', fontWeight: '700', color: '#991b1b' }}>
+                    {(session.allSlots || session.slots || []).filter(s => s.isBooked && s.booking?.attendanceStatus === 'no_show').length}
+                  </span>
+                  <span style={{ fontSize: '11px', color: 'var(--color-secondary)' }}>No-show</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -998,6 +1169,70 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
       ) : (
         /* Slots Management Grid & Time Stream */
         <div>
+          {/* Day Tabs Filter (for Multi-Day Events) */}
+          {session.days && session.days.length > 1 && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                flexWrap: 'wrap',
+                backgroundColor: 'var(--color-surface-container)',
+                padding: '12px 18px',
+                borderRadius: 'var(--radius-lg)',
+                marginBottom: '12px',
+                border: '1px solid var(--color-outline-variant)'
+              }}
+            >
+              <span style={{ fontSize: '12px', fontWeight: '700', color: 'var(--color-secondary)', textTransform: 'uppercase', marginRight: '4px' }}>
+                🗓️ Filter Day:
+              </span>
+
+              <button
+                type="button"
+                className={`chip ${selectedDayTab === 'all' ? 'chip-primary' : 'chip-neutral'}`}
+                onClick={() => setSelectedDayTab('all')}
+                style={{
+                  cursor: 'pointer',
+                  padding: '6px 12px',
+                  fontSize: '12px',
+                  backgroundColor: selectedDayTab === 'all' ? 'var(--color-primary)' : 'var(--color-surface)',
+                  color: selectedDayTab === 'all' ? '#ffffff' : 'var(--color-primary)',
+                  border: '1px solid var(--color-outline-variant)'
+                }}
+              >
+                All Days ({session.days.length} Days • {session.totalSlots} seats)
+              </button>
+
+              {session.days.map((d, index) => {
+                const isSelected = selectedDayTab === d.id;
+                const daySlots = session.daySlots?.[d.id]?.all || [];
+                const dayBooked = daySlots.filter((s) => s.isBooked).length;
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    className={`chip ${isSelected ? 'chip-primary' : 'chip-neutral'}`}
+                    onClick={() => setSelectedDayTab(d.id)}
+                    style={{
+                      cursor: 'pointer',
+                      padding: '6px 12px',
+                      fontSize: '12px',
+                      backgroundColor: isSelected ? 'var(--color-primary)' : 'var(--color-surface)',
+                      color: isSelected ? '#ffffff' : 'var(--color-primary)',
+                      border: '1px solid var(--color-outline-variant)'
+                    }}
+                  >
+                    <span>{d.label || `Day ${index + 1}`} ({formatDateDisplay(d.date)})</span>
+                    <span style={{ opacity: 0.85, fontSize: '11px', marginLeft: '4px' }}>
+                      ({dayBooked}/{daySlots.length})
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           {/* Category Tabs / Tracks Filter */}
           <div
             style={{
@@ -1142,6 +1377,24 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
                   >
                     Booked ({session.bookedCount})
                   </button>
+                  {session.attendedCount > 0 && (
+                    <button
+                      className={`btn btn-sm ${filterPeriod === 'attended' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setFilterPeriod('attended')}
+                      style={{ fontSize: '12px', padding: '6px 12px', ...(filterPeriod !== 'attended' ? { backgroundColor: '#f0fdf4', color: '#166534', borderColor: '#86efac' } : {}) }}
+                    >
+                      ✓ Attended ({session.attendedCount})
+                    </button>
+                  )}
+                  {session.bookedCount - session.attendedCount > 0 && (session.allSlots || session.slots || []).some(s => s.isBooked && s.booking?.attendanceStatus === 'no_show') && (
+                    <button
+                      className={`btn btn-sm ${filterPeriod === 'no_show' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setFilterPeriod('no_show')}
+                      style={{ fontSize: '12px', padding: '6px 12px', ...(filterPeriod !== 'no_show' ? { backgroundColor: '#fef2f2', color: '#991b1b', borderColor: '#fca5a5' } : {}) }}
+                    >
+                      ✗ No-show ({(session.allSlots || session.slots || []).filter(s => s.isBooked && s.booking?.attendanceStatus === 'no_show').length})
+                    </button>
+                  )}
                   <button
                     className={`btn btn-sm ${filterPeriod === 'blocked' ? 'btn-primary' : 'btn-secondary'}`}
                     onClick={() => setFilterPeriod('blocked')}
@@ -1277,6 +1530,8 @@ export default function SessionDetailView({ sessionId, onBack, onShowToast }) {
                   { key: 'all', label: `All Slots (${session.totalSlots})` },
                   { key: 'available', label: `Open (${session.availableCount !== undefined ? session.availableCount : (session.totalSlots - session.bookedCount - (session.blockedCount || 0))})` },
                   { key: 'booked', label: `Booked (${session.bookedCount})` },
+                  ...(session.attendedCount > 0 ? [{ key: 'attended', label: `✓ Attended (${session.attendedCount})` }] : []),
+                  ...((session.allSlots || session.slots || []).some(s => s.isBooked && s.booking?.attendanceStatus === 'no_show') ? [{ key: 'no_show', label: `✗ No-show (${(session.allSlots || session.slots || []).filter(s => s.isBooked && s.booking?.attendanceStatus === 'no_show').length})` }] : []),
                   { key: 'blocked', label: `Unavailable (${session.blockedCount || 0})` },
                   { key: 'morning', label: 'Morning (<12 PM)' },
                   { key: 'afternoon', label: 'Afternoon (12–5 PM)' },

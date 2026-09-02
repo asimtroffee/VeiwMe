@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
-import { getAuth } from 'firebase/auth';
+import { getAuth, signInAnonymously } from 'firebase/auth';
 
 // Read config exclusively from environment variables (.env)
 const firebaseConfig = {
@@ -32,6 +32,20 @@ if (isFirebaseConfigured()) {
     console.log('✅ Firebase Firestore & Auth successfully initialized');
   } catch (error) {
     console.error('❌ Error initializing Firebase:', error);
+  }
+}
+
+export async function ensureFirebaseAuth() {
+  if (isFirebaseConfigured() && auth) {
+    if (!auth.currentUser) {
+      try {
+        await signInAnonymously(auth);
+        console.log('✅ Firebase anonymous session active');
+      } catch (err) {
+        // In case anonymous auth is disabled on Firebase console, ignore
+        console.warn('Firebase anonymous auth notice:', err.message);
+      }
+    }
   }
 }
 

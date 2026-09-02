@@ -6,7 +6,7 @@ import {
   subscribeToAdminSync,
   fetchAllRemoteAdminData
 } from '../../services/storage';
-import { formatDateDisplay, getRelativeDateBadge } from '../../services/timeUtils';
+import { formatDateDisplay, getRelativeDateBadge, formatEventDateRange } from '../../services/timeUtils';
 import CreateSessionModal from './CreateSessionModal';
 import SessionDetailView from './SessionDetailView';
 import CandidateDirectory from './CandidateDirectory';
@@ -45,9 +45,9 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
     onShowToast('Unique participant link copied to clipboard!');
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!sessionToDelete) return;
-    deleteSession(sessionToDelete.id);
+    await deleteSession(sessionToDelete.id);
     onShowToast(`Session "${sessionToDelete.title}" deleted.`);
     setSessionToDelete(null);
     loadSessions();
@@ -335,8 +335,13 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
                     <div>
                       {/* Card Header & Badges */}
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                        <div style={{ display: 'flex', gap: '6px' }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                           <span className="chip chip-neutral">{session.timezone}</span>
+                          {(session.eventType === 'multi' || (session.days && session.days.length > 1)) && (
+                            <span className="chip" style={{ backgroundColor: 'var(--color-primary)', color: '#FFFFFF', fontWeight: '700' }}>
+                              🗓️ {session.days?.length || 'Multi'} Days
+                            </span>
+                          )}
                           {dateBadge && <span className="chip chip-accent">{dateBadge}</span>}
                         </div>
                         <div style={{ display: 'flex', gap: '4px' }}>
@@ -346,7 +351,7 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
                               setSessionToEdit(session);
                             }}
                             style={{ color: 'var(--color-primary)', padding: '4px', borderRadius: '4px' }}
-                            title="Edit Session Details / Timezone"
+                            title="Edit Event Details / Timezone"
                           >
                             <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
                               edit
@@ -358,7 +363,7 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
                               setSessionToDelete(session);
                             }}
                             style={{ color: 'var(--color-secondary)', padding: '4px', borderRadius: '4px' }}
-                            title="Delete Session"
+                            title="Delete Event"
                           >
                             <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>
                               delete
@@ -383,11 +388,16 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', color: 'var(--color-secondary)', fontSize: '13px', marginBottom: '16px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>calendar_today</span>
-                          <span>{formatDateDisplay(session.date)}</span>
+                          <span>{formatEventDateRange(session)}</span>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>schedule</span>
-                          <span>{session.startTime} – {session.endTime} ({session.slotDuration || 15}m slots)</span>
+                          <span>
+                            {session.eventType === 'multi' && session.days?.length > 1
+                              ? `${session.days.length} Days Schedule (${session.slotDuration || 15}m slots)`
+                              : `${session.startTime} – ${session.endTime} (${session.slotDuration || 15}m slots)`
+                            }
+                          </span>
                         </div>
                       </div>
 
@@ -397,6 +407,13 @@ export default function AdminDashboard({ onLogout, onShowToast }) {
                           <span style={{ color: 'var(--color-primary)' }}>{session.bookedCount} / {session.totalSlots} Booked</span>
                           <span style={{ color: 'var(--color-secondary)' }}>{session.percentBooked}%</span>
                         </div>
+                        {session.attendedCount > 0 && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', marginBottom: '4px' }}>
+                            <span className="material-symbols-outlined" style={{ fontSize: '13px', color: '#16a34a' }}>check_circle</span>
+                            <span style={{ color: '#166534', fontWeight: '600' }}>{session.attendedCount} attended</span>
+                            <span style={{ color: 'var(--color-secondary)' }}>of {session.bookedCount} booked</span>
+                          </div>
+                        )}
                         <div
                           style={{
                             height: '6px',
